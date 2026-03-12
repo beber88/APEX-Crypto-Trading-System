@@ -1,0 +1,159 @@
+# ═══════════════════════════════════════════════════════
+# APEX CRYPTO TRADING SYSTEM — config.yaml
+# All parameters documented. Edit before deployment.
+# ═══════════════════════════════════════════════════════
+
+system:
+  name: "APEX Crypto Trading System"
+  version: "1.0.0"
+  mode: "paper"          # "paper" or "live" — START WITH PAPER
+  log_level: "INFO"      # DEBUG / INFO / WARNING / ERROR
+  timezone: "UTC"
+
+exchange:
+  name: "mexc"
+  spot_enabled: true
+  futures_enabled: true
+  testnet: true           # Set to false for live trading
+  rate_limit_ms: 50       # Milliseconds between API calls
+  max_retries: 5
+  retry_backoff_base: 2.0
+
+assets:
+  tier1: ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"]
+  tier2: ["DOGE/USDT", "AVAX/USDT", "LINK/USDT", "DOT/USDT", "MATIC/USDT",
+          "ADA/USDT", "ATOM/USDT", "LTC/USDT", "UNI/USDT", "APT/USDT"]
+  dynamic_watchlist_refresh_hours: 4
+  min_daily_volume_usd: 8000000
+  min_price: 0.001
+
+timeframes:
+  scalping: ["1m", "3m"]
+  intraday: ["5m", "15m", "30m"]
+  swing: ["1h", "2h", "4h"]
+  macro: ["1d", "1w"]
+  regime_classification: ["4h", "1d"]
+
+data:
+  history_years: 5
+  timescaledb_url: "postgresql://apex:apex_password@timescaledb:5432/apex_db"
+  sqlite_path: "./data/trades.db"
+  redis_url: "redis://redis:6379/0"
+  alt_data_refresh_minutes: 15
+  fear_greed_url: "https://api.alternative.me/fng/"
+  cryptopanic_api_key: "${CRYPTOPANIC_API_KEY}"
+
+indicators:
+  ema_periods: [9, 21, 50, 100, 200]
+  rsi_periods: [7, 14, 21]
+  macd: {fast: 12, slow: 26, signal: 9}
+  bollinger: {period: 20, std: 2.0}
+  keltner: {period: 20, atr_mult: 1.5}
+  atr_period: 14
+  stochastic: {k: 14, d: 3, smooth: 3}
+  adx_period: 14
+  supertrend_multipliers: [2.0, 3.0]
+  ichimoku: {tenkan: 9, kijun: 26, senkou: 52, chikou: 26}
+  volume_zscore_period: 20
+  cmf_period: 20
+  mfi_period: 14
+
+smc:
+  swing_lookback: 5         # Bars each side for swing detection
+  ob_min_move_pct: 0.5      # Min % move to qualify as Order Block
+  fvg_min_size_pct: 0.1     # Min FVG size as % of price
+  sr_lookback: 200          # Bars for S/R zone clustering
+  sr_cluster_tolerance: 0.003  # 0.3% price clustering tolerance
+
+risk:
+  risk_per_trade_pct: 1.0        # % of portfolio at risk per trade
+  max_position_pct: 5.0          # Max single position size
+  max_asset_concentration_pct: 10.0
+  correlation_reduce_threshold: 0.75
+  correlation_reduce_factor: 0.4
+  min_rr_ratio: 1.8              # Skip trades below this R:R
+  atr_stop_multiplier: 1.5
+  trailing_stop_atr_mult: 1.0
+  tp1_r: 1.5
+  tp2_r: 2.5
+  tp3_trail_atr: 1.5
+  tp1_close_pct: 0.35
+  tp2_close_pct: 0.35
+  daily_loss_limit_pct: 3.0      # Pause trading
+  max_drawdown_pct: 12.0         # Full system halt
+  max_trades_per_day: 25
+  max_open_positions: 8
+  consecutive_loss_cooldown_minutes: 120
+  consecutive_loss_threshold: 3
+  cooldown_elevated_score: 80
+  max_leverage: 3.0
+  default_leverage: 1.0
+  flash_crash_pct: 6.0           # % drop in 2 minutes = guard
+  flash_crash_halt_minutes: 30
+  min_spread_pct: 0.15
+  funding_rate_long_halt: 0.003  # 0.3% — close longs
+
+signals:
+  full_position_score: 75
+  half_position_score: 60
+  conflict_threshold: 40         # Max disagreement between strategies
+  min_agreeing_strategies: 2
+  timeframe_alignment_bonus: 20
+  sentiment_alignment_bonus: 10
+  fear_greed_extreme_bonus: 15
+  fear_greed_extreme_low: 15
+  fear_greed_extreme_high: 85
+  win_rate_window_trades: 60     # Rolling window for strategy weighting
+
+strategies:
+  trend_momentum: {enabled: true, primary_tf: "4h", confirm_tf: "1d", entry_tf: "1h"}
+  mean_reversion: {enabled: true, rsi_oversold: 28, rsi_overbought: 72, primary_tf: "1h"}
+  breakout: {enabled: true, volume_zscore_min: 2.5, confirm_candles: 2}
+  smc: {enabled: true, htf_bias_tf: "1d", structure_tf: "4h", entry_tf: "15m"}
+  scalping: {enabled: true, max_trades_per_session: 10, min_win_rate: 0.42,
+             assets: ["BTC/USDT", "ETH/USDT"], stop_pct: 0.004, target_pct: 0.007}
+  funding_rate: {enabled: true, long_bias_threshold: -0.0005, short_bias_threshold: 0.001}
+  swing: {enabled: true, primary_tf: "1d", entry_tf: "4h", hold_days_max: 10}
+  oi_divergence: {enabled: true, rsi_low: 35, rsi_high: 70, timeframe: "4h"}
+
+ml:
+  regime_model_path: "./ml/models/regime_classifier.pkl"
+  regime_retrain_days: 30
+  finbert_model: "ProsusAI/finbert"
+  finbert_batch_size: 16
+  regime_features: ["adx", "volatility_pct", "ema_slope", "bb_width",
+                    "rsi_14", "oi_change_pct", "funding_rate", "fear_greed",
+                    "volume_zscore", "btc_correlation"]
+
+dashboard:
+  host: "0.0.0.0"
+  port: 8000
+  update_interval_seconds: 30
+  auth_enabled: true
+  username: "${DASHBOARD_USER}"
+  password: "${DASHBOARD_PASSWORD}"
+
+telegram:
+  enabled: true
+  bot_token: "${TELEGRAM_BOT_TOKEN}"
+  chat_id: "${TELEGRAM_CHAT_ID}"
+  daily_report_time_utc: "00:05"
+  weekly_report_day: "Monday"
+
+reporting:
+  output_dir: "./reports"
+  daily_enabled: true
+  weekly_enabled: true
+  monthly_enabled: true
+
+backtest:
+  commission_pct: 0.001        # 0.1% round trip
+  slippage_pct: 0.0005         # 0.05% slippage
+  min_trades_required: 200
+  min_sharpe: 1.5
+  min_win_rate: 0.45
+  max_drawdown: 0.20
+  min_profit_factor: 1.5
+  wfo_insample_months: 12
+  wfo_outsample_months: 4
+  monte_carlo_runs: 1000

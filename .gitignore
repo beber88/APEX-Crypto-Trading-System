@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Environment variables
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Data & logs (generated at runtime)
+data/*.db
+data/*.sqlite
+logs/*.log
+logs/*.json
+reports/*.pdf
+reports/*.html
+
+# ML models (large binary files)
+ml/models/*.pkl
+ml/models/*.pt
+ml/models/*.bin
+
+# Docker volumes
+postgres_data/
+redis_data/
+grafana_data/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Pytest
+.pytest_cache/
+htmlcov/
+.coverage

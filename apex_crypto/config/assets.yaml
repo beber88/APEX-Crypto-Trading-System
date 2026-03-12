@@ -1,0 +1,68 @@
+# ═══════════════════════════════════════════════════════
+# APEX CRYPTO TRADING SYSTEM — assets.yaml
+# Asset tiers and filtering configuration
+# ═══════════════════════════════════════════════════════
+
+tier1:
+  description: "Core assets — always active, highest liquidity"
+  symbols:
+    - symbol: "BTC/USDT"
+      futures: "BTC/USDT:USDT"
+      max_leverage: 3
+    - symbol: "ETH/USDT"
+      futures: "ETH/USDT:USDT"
+      max_leverage: 3
+    - symbol: "SOL/USDT"
+      futures: "SOL/USDT:USDT"
+      max_leverage: 3
+    - symbol: "BNB/USDT"
+      futures: "BNB/USDT:USDT"
+      max_leverage: 3
+    - symbol: "XRP/USDT"
+      futures: "XRP/USDT:USDT"
+      max_leverage: 3
+
+tier2:
+  description: "Secondary assets — active when signal is strong"
+  min_signal_score: 70
+  symbols:
+    - symbol: "DOGE/USDT"
+      futures: "DOGE/USDT:USDT"
+      max_leverage: 2
+    - symbol: "AVAX/USDT"
+      futures: "AVAX/USDT:USDT"
+      max_leverage: 2
+    - symbol: "LINK/USDT"
+      futures: "LINK/USDT:USDT"
+      max_leverage: 2
+    - symbol: "DOT/USDT"
+      futures: "DOT/USDT:USDT"
+      max_leverage: 2
+    - symbol: "MATIC/USDT"
+      futures: "MATIC/USDT:USDT"
+      max_leverage: 2
+    - symbol: "ADA/USDT"
+      futures: "ADA/USDT:USDT"
+      max_leverage: 2
+    - symbol: "ATOM/USDT"
+      futures: "ATOM/USDT:USDT"
+      max_leverage: 2
+    - symbol: "LTC/USDT"
+      futures: "LTC/USDT:USDT"
+      max_leverage: 2
+    - symbol: "UNI/USDT"
+      futures: "UNI/USDT:USDT"
+      max_leverage: 2
+    - symbol: "APT/USDT"
+      futures: "APT/USDT:USDT"
+      max_leverage: 2
+
+dynamic_watchlist:
+  description: "Auto-refreshed top coins by 24h volume"
+  refresh_interval_hours: 4
+  max_symbols: 30
+  filters:
+    min_daily_volume_usd: 8000000
+    min_price_usd: 0.001
+    exclude_stablecoins: true
+    stablecoin_patterns: ["USDT", "USDC", "BUSD", "DAI", "TUSD", "USDP", "FDUSD"]
