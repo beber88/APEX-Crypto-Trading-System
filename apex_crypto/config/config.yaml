@@ -194,6 +194,40 @@ compounding:
   vol_high_multiplier: 0.5
   compound_frequency: 10
   equity_snapshot_interval_seconds: 3600
+  profit_lock_step: 0.20            # Lock profits every 20% equity growth
+  profit_lock_fraction: 0.10         # Lock 10% of current equity
+  rebalance_every_hours: 6           # Time-based rebalance trigger
+
+# Position sizing (Kelly + Anti-Martingale)
+position_sizing:
+  base_risk_pct: 0.01               # 1% base risk (as fraction)
+  max_risk_pct: 0.03                # 3% maximum
+  min_risk_pct: 0.005               # 0.5% minimum
+  kelly_fraction: 0.5               # Half-Kelly (conservative)
+  win_streak_boost: 0.10            # +10% risk per consecutive win
+  loss_streak_cut: 0.10             # -10% risk per consecutive loss
+
+# Exposure controller (adaptive leverage & regime-based sizing)
+exposure:
+  max_positions_base: 12
+  max_positions_aggressive: 15
+  max_portfolio_leverage: 3.0
+  regime_multipliers:
+    STRONG_BULL: 1.5
+    WEAK_BULL: 1.2
+    RANGING: 1.0
+    WEAK_BEAR: 0.7
+    STRONG_BEAR: 0.5
+    HIGH_VOL: 0.5
+    CHAOS: 0.25
+  regime_leverage:
+    STRONG_BULL: 3.0
+    WEAK_BULL: 2.0
+    RANGING: 2.0
+    WEAK_BEAR: 1.5
+    STRONG_BEAR: 1.0
+    HIGH_VOL: 1.0
+    CHAOS: 1.0
 
 ml:
   regime_model_path: "./ml/models/regime_classifier.pkl"

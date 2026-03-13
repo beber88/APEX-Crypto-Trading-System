@@ -69,12 +69,23 @@ class CompoundingEngine:
         self.vol_high_multiplier: float = config.get("vol_high_multiplier", 0.5)
         self.compound_frequency: int = config.get("compound_frequency", 10)
 
+        # Profit locking: lock a fraction of profits every N% growth
+        self.profit_lock_step: float = config.get("profit_lock_step", 0.20)
+        self.profit_lock_fraction: float = config.get("profit_lock_fraction", 0.10)
+        self.rebalance_every_hours: int = config.get("rebalance_every_hours", 6)
+
         # Internal state
         self._consecutive_wins: int = 0
         self._consecutive_losses: int = 0
         self._current_risk_pct: float = self.base_risk_pct
         self._trades_since_resize: int = 0
         self._equity_snapshots: list[tuple[float, float]] = []
+
+        # Profit locking state
+        self._start_equity: Optional[float] = None
+        self._last_locked_equity: Optional[float] = None
+        self._locked_profit_total: float = 0.0
+        self._last_rebalance_ts: float = 0.0
 
         log_with_data(
             logger,
@@ -91,6 +102,9 @@ class CompoundingEngine:
                 "vol_low_multiplier": self.vol_low_multiplier,
                 "vol_high_multiplier": self.vol_high_multiplier,
                 "compound_frequency": self.compound_frequency,
+                "profit_lock_step": self.profit_lock_step,
+                "profit_lock_fraction": self.profit_lock_fraction,
+                "rebalance_every_hours": self.rebalance_every_hours,
             },
         )
 
@@ -417,6 +431,126 @@ class CompoundingEngine:
             },
         )
         return 1.0
+
+    # ------------------------------------------------------------------
+    # Profit locking
+    # ------------------------------------------------------------------
+
+    def maybe_lock_profits(self, current_equity: float) -> float:
+        """Lock a fraction of profits when equity grows past a threshold.
+
+        When equity grows by ``profit_lock_step`` (default 20%) above the
+        last locked level, ``profit_lock_fraction`` (default 10%) of the
+        current equity is "locked" — effectively reducing the tradable
+        equity so that position sizes don't scale infinitely.
+
+        Args:
+            current_equity: Current total portfolio equity.
+
+        Returns:
+            Effective equity available for trading (after locking).
+        """
+        if self._start_equity is None:
+            self._start_equity = current_equity
+            self._last_locked_equity = current_equity
+            return current_equity
+
+        base = self._last_locked_equity or self._start_equity
+        if base <= 0:
+            return current_equity
+
+        growth = (current_equity - base) / base
+
+        if growth >= self.profit_lock_step:
+            lock_amount = current_equity * self.profit_lock_fraction
+            new_equity_for_trading = current_equity - lock_amount
+            self._last_locked_equity = new_equity_for_trading
+            self._locked_profit_total += lock_amount
+
+            log_with_data(
+                logger,
+                "info",
+                "Profit locked — reducing tradable equity",
+                {
+                    "current_equity": round(current_equity, 2),
+                    "growth_pct": round(growth * 100, 2),
+                    "lock_amount": round(lock_amount, 2),
+                    "new_trading_equity": round(new_equity_for_trading, 2),
+                    "total_locked": round(self._locked_profit_total, 2),
+                },
+            )
+
+            return new_equity_for_trading
+
+        return current_equity
+
+    # ------------------------------------------------------------------
+    # Time-based rebalance check
+    # ------------------------------------------------------------------
+
+    def should_rebalance(self, now_ts: float) -> bool:
+        """Check if enough time or trades have passed for a rebalance.
+
+        Args:
+            now_ts: Current Unix timestamp.
+
+        Returns:
+            True if a rebalance should be triggered.
+        """
+        if self._last_rebalance_ts == 0.0:
+            self._last_rebalance_ts = now_ts
+            return False
+
+        # Trade-count trigger
+        if self._trades_since_resize >= self.compound_frequency:
+            return True
+
+        # Time trigger
+        hours_elapsed = (now_ts - self._last_rebalance_ts) / 3600.0
+        if hours_elapsed >= self.rebalance_every_hours:
+            return True
+
+        return False
+
+    def on_rebalance(self, equity: float, now_ts: float) -> None:
+        """Execute a rebalance event: recalibrate risk to current equity.
+
+        Scales base_risk_pct proportionally to equity growth (sqrt scaling
+        for conservatism).
+
+        Args:
+            equity: Current tradable equity.
+            now_ts: Current Unix timestamp.
+        """
+        if self._start_equity and self._start_equity > 0:
+            growth_factor = equity / self._start_equity
+            # Sqrt scaling: if equity doubles, risk grows by ~41%
+            new_base_risk = min(
+                self.anti_martingale_ceiling,
+                self.base_risk_pct * (growth_factor ** 0.5),
+            )
+            old_base = self.base_risk_pct
+            self.base_risk_pct = new_base_risk
+
+            log_with_data(
+                logger,
+                "info",
+                "Rebalance: base risk recalibrated to equity growth",
+                {
+                    "old_base_risk": round(old_base, 4),
+                    "new_base_risk": round(new_base_risk, 4),
+                    "growth_factor": round(growth_factor, 4),
+                    "equity": round(equity, 2),
+                },
+            )
+
+        self._last_rebalance_ts = now_ts
+        self._trades_since_resize = 0
+
+    @property
+    def locked_profit_total(self) -> float:
+        """Total profit amount locked so far."""
+        return self._locked_profit_total
 
     # ------------------------------------------------------------------
     # Equity projection (Monte Carlo)

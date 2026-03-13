@@ -85,6 +85,9 @@ class TradingEngine:
         self._exit_optimizer = None
         self._strategy_tuner = None
         self._speed_layer = None
+        self._position_sizing_engine = None
+        self._exposure_controller = None
+        self._stats_repo = None
         self._last_trade_won: bool = True
         self._market_vol_percentile: float = 50.0
 
@@ -202,6 +205,40 @@ class TradingEngine:
             )
         except Exception as exc:
             logger.warning("SpeedLayer not available: %s", exc)
+
+        # 6h. Position sizing engine (Kelly + Anti-Martingale)
+        try:
+            from apex_crypto.core.risk.position_sizing import PositionSizingEngine
+            ps_config = {
+                "base_risk_pct": self._full_config.get("risk", {}).get("risk_per_trade_pct", 1.0) / 100.0,
+                "max_risk_pct": 0.03,
+                "min_risk_pct": 0.005,
+                "kelly_fraction": 0.5,
+                "win_streak_boost": 0.10,
+                "loss_streak_cut": 0.10,
+            }
+            self._position_sizing_engine = PositionSizingEngine(ps_config)
+        except Exception as exc:
+            logger.warning("PositionSizingEngine not available: %s", exc)
+
+        # 6i. Exposure controller (adaptive leverage & regime-based sizing)
+        try:
+            from apex_crypto.core.risk.exposure import ExposureController
+            exposure_config = {
+                "max_positions_base": self._full_config.get("risk", {}).get("max_open_positions", 8),
+                "max_positions_aggressive": 15,
+                "max_portfolio_leverage": self._full_config.get("risk", {}).get("max_leverage", 3.0),
+            }
+            self._exposure_controller = ExposureController(exposure_config)
+        except Exception as exc:
+            logger.warning("ExposureController not available: %s", exc)
+
+        # 6j. Stats repository (DB-backed strategy stats for Kelly sizing)
+        try:
+            from apex_crypto.core.risk.stats_repository import StatsRepository
+            self._stats_repo = StatsRepository(self._full_config.get("data", {}))
+        except Exception as exc:
+            logger.warning("StatsRepository not available: %s", exc)
 
         # 7. Storage manager (optional — may fail without DB connections)
         try:
@@ -722,14 +759,21 @@ class TradingEngine:
                         self._daily_stats["consecutive_losses"] = 0
                         self._last_trade_won = True
 
-                    # Record in compounding engine
+                    # Record in compounding engine + check rebalance
                     if self._compounding_engine:
                         try:
+                            current_eq = self._equity_stats.get("current_equity", 10_000.0)
                             self._compounding_engine.record_trade_result(
                                 won=pnl_pct > 0,
                                 pnl_pct=pnl_pct,
-                                equity=self._equity_stats.get("current_equity", 10_000.0),
+                                equity=current_eq,
                             )
+                            # Check if time/trade-count triggers a rebalance
+                            now_ts = time.time()
+                            if self._compounding_engine.should_rebalance(now_ts):
+                                effective_eq = self._compounding_engine.maybe_lock_profits(current_eq)
+                                self._compounding_engine.on_rebalance(effective_eq, now_ts)
+                                logger.info("Compounding rebalance triggered (equity=%.2f)", effective_eq)
                         except Exception:
                             pass
 
@@ -787,13 +831,38 @@ class TradingEngine:
             return
 
         # Rule 12 (Eugene Ng): Conviction-based position sizing
-        # Enhanced with CompoundingEngine adaptive sizing
+        # Enhanced with Kelly + Anti-Martingale + Exposure Controller + Compounding
         equity = self._equity_stats.get("current_equity", 10_000.0)
         score = abs(opportunity.get("weighted_score", 0))
         num_agreeing = opportunity.get("num_agreeing", 0)
+        strategy_name = opportunity.get("strongest_signal", {}).get("strategy", "aggregated")
         base_risk_pct = self._full_config.get("risk", {}).get("risk_per_trade_pct", 1.0)
 
-        # Apply compounding engine adaptive risk
+        # Layer 1: Kelly + Anti-Martingale from DB stats
+        if self._position_sizing_engine and self._stats_repo:
+            try:
+                db_stats = self._stats_repo.get_strategy_stats(strategy_name)
+                if db_stats:
+                    from apex_crypto.core.risk.position_sizing import StrategyStats
+                    stats = StrategyStats(
+                        win_rate=db_stats["win_rate"],
+                        avg_win_r=db_stats["avg_win_r"],
+                        avg_loss_r=db_stats["avg_loss_r"],
+                        recent_win_streak=db_stats["recent_win_streak"],
+                        recent_loss_streak=db_stats["recent_loss_streak"],
+                    )
+                    kelly_risk = self._position_sizing_engine.get_risk_pct(stats)
+                    # Convert fraction to percentage for downstream code
+                    base_risk_pct = kelly_risk * 100.0
+                    logger.info("Kelly+AM risk for %s: %.2f%% (WR=%.1f%%, streak W%d/L%d)",
+                                strategy_name, base_risk_pct,
+                                db_stats["win_rate"] * 100,
+                                db_stats["recent_win_streak"],
+                                db_stats["recent_loss_streak"])
+            except Exception as exc:
+                logger.debug("PositionSizingEngine error: %s", exc)
+
+        # Layer 2: Compounding engine adaptive risk (drawdown + vol)
         if self._compounding_engine:
             try:
                 adaptive = self._compounding_engine.calculate_adaptive_risk(
@@ -810,12 +879,23 @@ class TradingEngine:
             except Exception as exc:
                 logger.debug("Compounding engine error: %s", exc)
 
-        # Apply strategy tuner asset multiplier
+        # Layer 3: Exposure controller — regime-based risk multiplier
+        current_regime = self._current_regimes.get(symbol, {}).get("regime", "RANGING")
+        if self._exposure_controller:
+            try:
+                regime_mult = self._exposure_controller.get_risk_multiplier(current_regime)
+                base_risk_pct *= regime_mult
+                logger.info("Regime %s risk multiplier: %.2f → effective risk: %.2f%%",
+                            current_regime, regime_mult, base_risk_pct)
+            except Exception as exc:
+                logger.debug("ExposureController error: %s", exc)
+
+        # Layer 4: Strategy tuner asset multiplier
         if self._strategy_tuner:
             asset_mult = self._strategy_tuner.get_asset_multiplier(symbol)
             base_risk_pct *= asset_mult
 
-        # High conviction: score >= 75 AND 3+ agreeing strategies → up to 5%
+        # Layer 5: Conviction scaling
         if score >= 75 and num_agreeing >= 3:
             conviction_risk_pct = min(base_risk_pct * 5, 5.0)
             logger.info("HIGH CONVICTION trade for %s: risk=%.1f%% (score=%d, agreeing=%d)",
@@ -825,8 +905,16 @@ class TradingEngine:
         else:
             conviction_risk_pct = base_risk_pct
 
+        # Apply profit locking to reduce tradable equity
+        effective_equity = equity
+        if self._compounding_engine:
+            try:
+                effective_equity = self._compounding_engine.maybe_lock_profits(equity)
+            except Exception:
+                pass
+
         position_size_pct = decision.get("position_size_pct", conviction_risk_pct) / 100.0
-        position_value = equity * position_size_pct
+        position_value = effective_equity * position_size_pct
 
         # Get entry price
         current_price = await self._get_current_price(symbol)
@@ -851,9 +939,27 @@ class TradingEngine:
             else:
                 stop_loss = current_price * 1.02
 
+        # Adaptive leverage from exposure controller
         leverage = int(self._full_config.get("risk", {}).get("default_leverage", 1))
-        max_leverage = int(self._full_config.get("risk", {}).get("max_leverage", 3))
-        leverage = min(leverage, max_leverage)
+        if self._exposure_controller:
+            try:
+                max_leverage = self._exposure_controller.get_max_leverage(current_regime)
+            except Exception:
+                max_leverage = self._full_config.get("risk", {}).get("max_leverage", 3.0)
+        else:
+            max_leverage = self._full_config.get("risk", {}).get("max_leverage", 3.0)
+        leverage = min(leverage, int(max_leverage))
+
+        # Check max positions from exposure controller
+        if self._exposure_controller:
+            try:
+                max_pos = self._exposure_controller.get_max_positions(current_regime)
+                if len(self._open_positions) >= max_pos:
+                    logger.info("Max positions (%d) reached for regime %s — skipping %s",
+                                max_pos, current_regime, symbol)
+                    return
+            except Exception:
+                pass
 
         # Build entry signal for broker
         entry_signal = {
@@ -1109,7 +1215,21 @@ class TradingEngine:
                     "current_risk_pct": getattr(self._compounding_engine, '_current_risk_pct', 1.0),
                     "consecutive_wins": getattr(self._compounding_engine, '_consecutive_wins', 0),
                     "consecutive_losses": getattr(self._compounding_engine, '_consecutive_losses', 0),
+                    "locked_profit": getattr(self._compounding_engine, '_locked_profit_total', 0.0),
+                    "base_risk_pct": getattr(self._compounding_engine, 'base_risk_pct', 1.0),
                 }
+            except Exception:
+                pass
+
+        # Add exposure controller state
+        if self._exposure_controller:
+            try:
+                # Use first regime or default
+                sample_regime = "RANGING"
+                for r in self._current_regimes.values():
+                    sample_regime = r.get("regime", "RANGING")
+                    break
+                state["exposure"] = self._exposure_controller.get_exposure_params(sample_regime)
             except Exception:
                 pass
 
