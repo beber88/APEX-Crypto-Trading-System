@@ -10,6 +10,10 @@ system:
   log_level: "DEBUG"     # DEBUG for paper testing (change to INFO for live)
   timezone: "UTC"
 
+engine:
+  cycle_interval_seconds: 30        # Run trading cycle every 30s
+  data_refresh_seconds: 120         # Refresh OHLCV data every 2 minutes
+
 exchange:
   name: "mexc"
   spot_enabled: true
@@ -22,7 +26,7 @@ exchange:
 
 assets:
   tier1: ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"]
-  tier2: ["DOGE/USDT", "AVAX/USDT", "LINK/USDT", "DOT/USDT", "MATIC/USDT",
+  tier2: ["DOGE/USDT", "AVAX/USDT", "LINK/USDT", "DOT/USDT", "POL/USDT",
           "ADA/USDT", "ATOM/USDT", "LTC/USDT", "UNI/USDT", "APT/USDT"]
   dynamic_watchlist_refresh_hours: 4
   min_daily_volume_usd: 8000000

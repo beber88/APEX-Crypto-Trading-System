@@ -38,8 +38,8 @@ tier2:
     - symbol: "DOT/USDT"
       futures: "DOT/USDT:USDT"
       max_leverage: 2
-    - symbol: "MATIC/USDT"
-      futures: "MATIC/USDT:USDT"
+    - symbol: "POL/USDT"
+      futures: "POL/USDT:USDT"
       max_leverage: 2
     - symbol: "ADA/USDT"
       futures: "ADA/USDT:USDT"

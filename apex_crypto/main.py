@@ -84,8 +84,12 @@ class ApexTradingSystem:
         tier2 = self._config.get("assets.tier2", [])
         all_symbols = tier1 + tier2
 
-        # Timeframes to monitor
-        timeframes = ["1h", "4h", "1d"]
+        # Use all configured timeframes from config.yaml
+        # Includes lower TFs needed by strategies (SMC→15m, scalping→1m/3m)
+        timeframes = self._config.get_timeframes()
+        if not timeframes:
+            timeframes = ["1m", "3m", "5m", "15m", "1h", "4h", "1d"]
+        logger.info(f"Timeframes: {timeframes}")
 
         mode = self._config.get("system.mode", "paper")
 
