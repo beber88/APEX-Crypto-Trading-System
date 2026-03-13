@@ -489,6 +489,17 @@ class AlternativeDataManager:
     # 4. Funding Rates
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _to_futures_symbol(symbol: str) -> str:
+        """Convert a spot symbol to futures format if needed.
+
+        ``"DOGE/USDT"`` → ``"DOGE/USDT:USDT"``
+        Already-futures symbols are returned unchanged.
+        """
+        if ":USDT" not in symbol and "/USDT" in symbol:
+            return f"{symbol}:USDT"
+        return symbol
+
     async def fetch_funding_rates(
         self, symbols: list[str]
     ) -> dict[str, float]:
@@ -508,7 +519,7 @@ class AlternativeDataManager:
         try:
             await exchange.load_markets()
 
-            for symbol in symbols:
+            for symbol in [self._to_futures_symbol(s) for s in symbols]:
                 try:
                     funding = await exchange.fetch_funding_rate(symbol)
                     rate: float = float(funding.get("fundingRate", 0.0))
@@ -664,7 +675,7 @@ class AlternativeDataManager:
         try:
             await exchange.load_markets()
 
-            for symbol in symbols:
+            for symbol in [self._to_futures_symbol(s) for s in symbols]:
                 try:
                     oi = await exchange.fetch_open_interest(symbol)
                     oi_value: float = float(

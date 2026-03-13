@@ -1150,6 +1150,57 @@ class StorageManager:
         return self._redis.get(redis_key)
 
     # ------------------------------------------------------------------
+    # Async wrappers for AlternativeDataManager compatibility
+    # ------------------------------------------------------------------
+
+    async def redis_get(self, key: str) -> Optional[str]:
+        """Async wrapper around Redis GET."""
+        if self._redis is None:
+            raise RuntimeError("Redis is not initialised")
+        return self._redis.get(key)
+
+    async def redis_set(
+        self, key: str, value: str, ttl: Optional[int] = None
+    ) -> None:
+        """Async wrapper around Redis SET/SETEX."""
+        if self._redis is None:
+            raise RuntimeError("Redis is not initialised")
+        if ttl:
+            self._redis.setex(key, ttl, value)
+        else:
+            self._redis.set(key, value)
+
+    async def timescaledb_insert(
+        self, table: str, record: dict[str, Any]
+    ) -> None:
+        """Async wrapper for inserting a single record into TimescaleDB."""
+        if self._pg_pool is None:
+            raise RuntimeError("TimescaleDB pool is not initialised")
+        columns = list(record.keys())
+        values = list(record.values())
+        col_str = ", ".join(columns)
+        placeholders = ", ".join(["%s"] * len(columns))
+        sql = f"INSERT INTO {table} ({col_str}) VALUES ({placeholders}) ON CONFLICT DO NOTHING"
+        with self._pg_cursor() as cur:
+            cur.execute(sql, values)
+
+    async def timescaledb_query(
+        self, query: str, params: Optional[list] = None
+    ) -> list[dict[str, Any]]:
+        """Async wrapper for running a SELECT query on TimescaleDB."""
+        if self._pg_pool is None:
+            raise RuntimeError("TimescaleDB pool is not initialised")
+        # Convert $1, $2 style params to %s style for psycopg2
+        converted_query = query
+        if params:
+            for i in range(len(params), 0, -1):
+                converted_query = converted_query.replace(f"${i}", "%s")
+        with self._pg_cursor(commit=False) as cur:
+            cur.execute(converted_query, params or [])
+            rows = cur.fetchall()
+        return [dict(r) for r in rows] if rows else []
+
+    # ------------------------------------------------------------------
     # Redis helpers
     # ------------------------------------------------------------------
 
