@@ -12,7 +12,7 @@ numpy>=1.24.0
 scipy>=1.11.0
 
 # Technical Analysis
-pandas_ta
+# ta>=0.11.0  # optional — technical analysis lib (not required for core)
 
 # Simons Quantitative Upgrades
 statsmodels>=0.14.0
