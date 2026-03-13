@@ -6,7 +6,7 @@
 system:
   name: "APEX Crypto Trading System"
   version: "1.0.0"
-  mode: "live"           # "paper" or "live"
+  mode: "paper"           # "paper" or "live"
   log_level: "INFO"      # DEBUG / INFO / WARNING / ERROR
   timezone: "UTC"
 
