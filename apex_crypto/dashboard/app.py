@@ -306,11 +306,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 </div>
 
 <script>
-// ── Auth Header ──
-const AUTH = 'Basic ' + btoa('admin:apex_dashboard_2024');
 async function api(ep) {
   try {
-    const r = await fetch('/api/' + ep, { headers: { Authorization: AUTH } });
+    const r = await fetch('/api/' + ep);
     return r.ok ? await r.json() : null;
   } catch(e) { return null; }
 }

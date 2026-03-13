@@ -5,11 +5,6 @@ risk metrics, regime information, Fear & Greed index, funding rates,
 performance stats, trading controls, Prometheus metrics, and real-time
 WebSocket updates.
 
-Authentication is handled via HTTP Basic Auth with credentials sourced
-from the ``DASHBOARD_USER`` and ``DASHBOARD_PASSWORD`` environment
-variables.  The ``/api/metrics`` endpoint is exempt from authentication
-so that Prometheus scrapers can reach it without credentials.
-
 CORS is enabled for all origins by default but can be narrowed via the
 ``CORS_ALLOWED_ORIGINS`` environment variable (comma-separated list).
 """
@@ -19,25 +14,19 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import secrets
 import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import (
     BackgroundTasks,
-    Depends,
     FastAPI,
-    HTTPException,
     Query,
-    Request,
     WebSocket,
     WebSocketDisconnect,
-    status,
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from apex_crypto.core.logging import get_logger, log_with_data
 from apex_crypto.dashboard.api.websocket_manager import WebSocketManager
@@ -65,78 +54,6 @@ _broadcast_task: Optional[asyncio.Task[None]] = None
 # WebSocket manager singleton
 # ---------------------------------------------------------------------------
 ws_manager = WebSocketManager()
-
-# ---------------------------------------------------------------------------
-# Authentication helpers
-# ---------------------------------------------------------------------------
-_security = HTTPBasic(auto_error=False)
-
-def _get_dashboard_user() -> str:
-    """Return the configured dashboard username (read at call time)."""
-    return os.environ.get("DASHBOARD_USER", "admin")
-
-
-def _get_dashboard_password() -> str:
-    """Return the configured dashboard password (read at call time)."""
-    return os.environ.get("DASHBOARD_PASSWORD", "apex_dashboard_2024")
-
-
-async def _verify_credentials(
-    credentials: Optional[HTTPBasicCredentials] = Depends(_security),
-) -> Optional[str]:
-    """Verify HTTP Basic Auth credentials from environment variables.
-
-    Compares the supplied username and password against the values of
-    ``DASHBOARD_USER`` and ``DASHBOARD_PASSWORD`` using constant-time
-    comparison to prevent timing attacks.
-
-    Args:
-        credentials: HTTP Basic credentials extracted by FastAPI's
-            ``HTTPBasic`` security scheme.
-
-    Returns:
-        The authenticated username when credentials are valid, or
-        ``None`` if no credentials are required (should not happen
-        when this dependency is active).
-
-    Raises:
-        HTTPException: 401 Unauthorized when credentials are missing
-            or invalid.
-    """
-    if credentials is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required",
-            headers={"WWW-Authenticate": "Basic"},
-        )
-
-    expected_user = _get_dashboard_user()
-    expected_password = _get_dashboard_password()
-
-    username_ok = secrets.compare_digest(
-        credentials.username.encode("utf-8"),
-        expected_user.encode("utf-8"),
-    )
-    password_ok = secrets.compare_digest(
-        credentials.password.encode("utf-8"),
-        expected_password.encode("utf-8"),
-    )
-
-    if not (username_ok and password_ok):
-        log_with_data(
-            logger,
-            "warning",
-            "Failed authentication attempt",
-            {"username": credentials.username},
-        )
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials",
-            headers={"WWW-Authenticate": "Basic"},
-        )
-
-    return credentials.username
-
 
 # ---------------------------------------------------------------------------
 # CORS configuration
@@ -213,7 +130,6 @@ app.add_middleware(
 
 @app.get("/api/status")
 async def get_status(
-    _user: Optional[str] = Depends(_verify_credentials),
 ) -> dict[str, Any]:
     """Return current system status information.
 
@@ -241,7 +157,6 @@ async def get_status(
 
 @app.get("/api/equity")
 async def get_equity(
-    _user: Optional[str] = Depends(_verify_credentials),
 ) -> dict[str, Any]:
     """Return equity curve data, current equity, peak, and drawdown.
 
@@ -281,7 +196,6 @@ async def get_equity(
 
 @app.get("/api/positions")
 async def get_positions(
-    _user: Optional[str] = Depends(_verify_credentials),
 ) -> dict[str, Any]:
     """Return all currently open positions.
 
@@ -318,7 +232,6 @@ async def get_positions(
 
 @app.get("/api/trades")
 async def get_trades(
-    _user: Optional[str] = Depends(_verify_credentials),
     limit: int = Query(50, ge=1, le=500, description="Number of trades to return"),
     offset: int = Query(0, ge=0, description="Number of trades to skip"),
     symbol: Optional[str] = Query(None, description="Filter by trading symbol"),
@@ -367,7 +280,6 @@ async def get_trades(
 
 @app.get("/api/signals")
 async def get_signals(
-    _user: Optional[str] = Depends(_verify_credentials),
 ) -> dict[str, Any]:
     """Return current trading signals for all monitored assets.
 
@@ -399,7 +311,6 @@ async def get_signals(
 
 @app.get("/api/risk")
 async def get_risk(
-    _user: Optional[str] = Depends(_verify_credentials),
 ) -> dict[str, Any]:
     """Return current risk metrics.
 
@@ -435,7 +346,6 @@ async def get_risk(
 
 @app.get("/api/regimes")
 async def get_regimes(
-    _user: Optional[str] = Depends(_verify_credentials),
 ) -> dict[str, Any]:
     """Return the current market regime for each monitored asset.
 
@@ -469,7 +379,6 @@ async def get_regimes(
 
 @app.get("/api/fear-greed")
 async def get_fear_greed(
-    _user: Optional[str] = Depends(_verify_credentials),
 ) -> dict[str, Any]:
     """Return the current Fear and Greed index.
 
@@ -497,7 +406,6 @@ async def get_fear_greed(
 
 @app.get("/api/funding-rates")
 async def get_funding_rates(
-    _user: Optional[str] = Depends(_verify_credentials),
 ) -> dict[str, Any]:
     """Return current funding rates for perpetual contracts.
 
@@ -531,7 +439,6 @@ async def get_funding_rates(
 
 @app.get("/api/performance")
 async def get_performance(
-    _user: Optional[str] = Depends(_verify_credentials),
 ) -> dict[str, Any]:
     """Return rolling 30-day performance statistics.
 
@@ -564,7 +471,6 @@ async def get_performance(
 @app.post("/api/pause")
 async def pause_trading(
     background_tasks: BackgroundTasks,
-    _user: Optional[str] = Depends(_verify_credentials),
 ) -> dict[str, str]:
     """Pause all trading activity.
 
@@ -610,7 +516,6 @@ async def pause_trading(
 @app.post("/api/resume")
 async def resume_trading(
     background_tasks: BackgroundTasks,
-    _user: Optional[str] = Depends(_verify_credentials),
 ) -> dict[str, str]:
     """Resume trading activity.
 
@@ -824,7 +729,7 @@ async def on_startup() -> None:
         {
             "version": _VERSION,
             "cors_origins": _cors_origins(),
-            "auth_user": _get_dashboard_user(),
+            "auth_enabled": False,
             "ws_broadcast_interval": _WS_BROADCAST_INTERVAL,
         },
     )
