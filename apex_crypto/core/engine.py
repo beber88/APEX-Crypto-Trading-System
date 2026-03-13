@@ -146,9 +146,11 @@ class TradingEngine:
             logger.warning("Alt data manager not available: %s", exc)
             self._alt_data_manager = None
 
-        # 8. Try to get initial balance
+        # 8. Try to get initial balance (timeout after 10s to avoid blocking startup)
         try:
-            balance = await self._broker.get_balance()
+            balance = await asyncio.wait_for(
+                self._broker.get_balance(), timeout=10.0
+            )
             equity = balance.get("total_usdt", 10_000.0)
             self._equity_stats["current_equity"] = equity
             self._equity_stats["peak_equity"] = equity
@@ -156,7 +158,7 @@ class TradingEngine:
                 "equity": equity,
             })
         except Exception as exc:
-            logger.warning("Could not fetch initial balance: %s", exc)
+            logger.warning("Could not fetch initial balance: %s — using default", exc)
             self._equity_stats["current_equity"] = 10_000.0
             self._equity_stats["peak_equity"] = 10_000.0
 
@@ -207,8 +209,14 @@ class TradingEngine:
             "timeframes": timeframes,
         })
 
-        # Initial data load
-        await self._refresh_market_data(symbols, timeframes)
+        # Initial data load (timeout so dashboard isn't blocked)
+        try:
+            await asyncio.wait_for(
+                self._refresh_market_data(symbols, timeframes),
+                timeout=30.0,
+            )
+        except (asyncio.TimeoutError, Exception) as exc:
+            logger.warning("Initial data load incomplete: %s — will retry in loop", exc)
 
         while self._running:
             try:
