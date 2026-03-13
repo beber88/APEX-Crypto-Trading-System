@@ -1,12 +1,13 @@
 """APEX Crypto Trading System — Main Entry Point.
 
 Initializes all system components and starts the autonomous trading loop.
+Runs the trading engine, dashboard API, and optional Telegram bot.
 """
 
 import asyncio
+import os
 import signal
 import sys
-import os
 from pathlib import Path
 from typing import Optional
 
@@ -23,61 +24,41 @@ class ApexTradingSystem:
     """
 
     def __init__(self) -> None:
-        """Initialize the trading system."""
         self._running: bool = False
-        self._config: Optional[dict] = None
+        self._config = None
         self._tasks: list[asyncio.Task] = []
+        self._engine = None
 
     async def initialize(self) -> None:
-        """Initialize all system components.
-
-        Loads configuration, connects to databases, initializes
-        exchange connections, and prepares all subsystems.
-        """
+        """Initialize all system components."""
         logger.info("Initializing APEX Crypto Trading System")
+
+        # Load .env file if present
+        env_path = Path(__file__).parent.parent / ".env"
+        if env_path.exists():
+            self._load_env(env_path)
+            logger.info("Loaded .env file")
 
         # Load configuration
         from apex_crypto.config.loader import Config
-        self._config = Config.load()
+        self._config = Config()
         mode = self._config.get("system.mode", "paper")
         logger.info(f"System mode: {mode}")
 
-        # Initialize storage
-        from apex_crypto.core.data.storage import StorageManager
-        self._storage = StorageManager(
-            timescaledb_url=self._config.get("data.timescaledb_url"),
-            sqlite_path=self._config.get("data.sqlite_path"),
-            redis_url=self._config.get("data.redis_url"),
-        )
+        # Ensure data directories exist
+        Path("./data").mkdir(parents=True, exist_ok=True)
+        Path("./reports").mkdir(parents=True, exist_ok=True)
 
-        # Initialize data ingestion
-        from apex_crypto.core.data.ingestion import MarketDataManager
-        self._data_manager = MarketDataManager(
-            config=self._config._data,
-            storage=self._storage,
-        )
-
-        # Initialize streaming
-        from apex_crypto.core.data.streaming import MarketStreamManager
-        self._stream_manager = MarketStreamManager(
-            config=self._config._data,
-            storage=self._storage,
-        )
-
-        # Initialize alternative data
-        from apex_crypto.core.data.alt_data import AlternativeDataManager
-        self._alt_data = AlternativeDataManager(
-            config=self._config._data,
-            storage=self._storage,
-        )
+        # Initialize the trading engine (replaces old storage/stream/data managers)
+        from apex_crypto.core.engine import TradingEngine
+        engine_cfg = self._config._data.get("engine", {})
+        self._engine = TradingEngine(engine_cfg, self._config._data)
+        await self._engine.setup()
 
         logger.info("All components initialized successfully")
 
     async def start(self) -> None:
-        """Start the trading system main loop.
-
-        Begins data streaming, analysis pipeline, and trade execution.
-        """
+        """Start the trading system main loop."""
         self._running = True
         logger.info("Starting APEX Crypto Trading System")
 
@@ -86,32 +67,67 @@ class ApexTradingSystem:
         tier2 = self._config.get("assets.tier2", [])
         all_symbols = tier1 + tier2
 
-        # Refresh latest data
-        all_timeframes = self._config.get_timeframes()
-        self._tasks.append(
-            asyncio.create_task(
-                self._data_manager.refresh_latest(all_symbols, all_timeframes)
-            )
-        )
+        # Timeframes to monitor
+        timeframes = ["1h", "4h", "1d"]
 
-        # Start WebSocket streams
-        self._tasks.append(
-            asyncio.create_task(
-                self._stream_manager.start(all_symbols)
-            )
-        )
+        mode = self._config.get("system.mode", "paper")
 
-        # Main loop
-        while self._running:
-            try:
-                await asyncio.sleep(30)
-            except asyncio.CancelledError:
-                break
+        # Start trading engine
+        engine_task = asyncio.create_task(
+            self._engine.run(all_symbols, timeframes),
+            name="trading_engine",
+        )
+        self._tasks.append(engine_task)
+
+        # Start dashboard
+        dashboard_task = asyncio.create_task(
+            self._run_dashboard(),
+            name="dashboard",
+        )
+        self._tasks.append(dashboard_task)
+
+        logger.info("=" * 60)
+        logger.info("  APEX CRYPTO TRADING SYSTEM — RUNNING")
+        logger.info(f"  Mode: {mode}")
+        logger.info(f"  Symbols: {len(all_symbols)}")
+        logger.info(f"  Strategies: {len(self._engine._strategies)}")
+        logger.info(f"  Dashboard: http://0.0.0.0:8000")
+        logger.info("=" * 60)
+
+        # Wait for tasks
+        try:
+            await asyncio.gather(*self._tasks)
+        except asyncio.CancelledError:
+            pass
+
+    async def _run_dashboard(self) -> None:
+        """Run the FastAPI dashboard server."""
+        try:
+            import uvicorn
+            from apex_crypto.dashboard.app import create_app
+
+            app = create_app(self._config._data, self._engine)
+
+            config = uvicorn.Config(
+                app,
+                host="0.0.0.0",
+                port=int(self._config.get("dashboard.port", 8000)),
+                log_level="warning",
+            )
+            server = uvicorn.Server(config)
+            await server.serve()
+        except ImportError as exc:
+            logger.warning("Dashboard not available (missing deps): %s", exc)
+        except Exception as exc:
+            logger.error("Dashboard error: %s", exc)
 
     async def stop(self) -> None:
         """Gracefully stop the trading system."""
         logger.info("Stopping APEX Crypto Trading System")
         self._running = False
+
+        if self._engine:
+            await self._engine.stop()
 
         for task in self._tasks:
             task.cancel()
@@ -119,13 +135,21 @@ class ApexTradingSystem:
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
 
-        if hasattr(self, "_stream_manager"):
-            await self._stream_manager.stop()
-
-        if hasattr(self, "_storage"):
-            self._storage.close()
-
         logger.info("System stopped gracefully")
+
+    @staticmethod
+    def _load_env(path: Path) -> None:
+        """Load environment variables from a .env file."""
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    key, _, value = line.partition("=")
+                    key = key.strip()
+                    value = value.strip().strip('"').strip("'")
+                    os.environ.setdefault(key, value)
 
 
 async def main() -> None:
