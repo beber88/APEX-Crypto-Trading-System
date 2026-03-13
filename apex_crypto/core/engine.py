@@ -436,7 +436,15 @@ class TradingEngine:
                              strategy.name, symbol, exc)
 
         if not signals:
+            logger.debug("No non-neutral signals for %s from %d strategies",
+                         symbol, len(self._strategies))
             return None
+
+        # Log signal details for debugging
+        for sig in signals:
+            logger.info("Signal: %s %s dir=%s score=%d strategy=%s",
+                        symbol, sig.timeframe, sig.direction.value,
+                        sig.score, sig.strategy)
 
         # Aggregate signals
         aggregated = self._aggregator.aggregate_signals(symbol, signals)
@@ -625,6 +633,10 @@ class TradingEngine:
 
         action = decision.get("action", "skip")
         if action == "skip":
+            logger.info("Trade SKIPPED for %s: %s (score=%.1f, agreeing=%d)",
+                        symbol, decision.get("reason", ""),
+                        decision.get("score", 0),
+                        opportunity.get("num_agreeing", 0))
             return
 
         # Calculate position size

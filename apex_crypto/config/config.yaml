@@ -7,7 +7,7 @@ system:
   name: "APEX Crypto Trading System"
   version: "1.0.0"
   mode: "paper"           # "paper" or "live"
-  log_level: "INFO"      # DEBUG / INFO / WARNING / ERROR
+  log_level: "DEBUG"     # DEBUG for paper testing (change to INFO for live)
   timezone: "UTC"
 
 exchange:
@@ -95,10 +95,10 @@ risk:
   funding_rate_long_halt: 0.003  # 0.3% — close longs
 
 signals:
-  full_position_score: 75
-  half_position_score: 60
+  full_position_score: 60        # Lowered for paper testing (was 75)
+  half_position_score: 40        # Lowered for paper testing (was 60)
   conflict_threshold: 40         # Max disagreement between strategies
-  min_agreeing_strategies: 2
+  min_agreeing_strategies: 1     # Lowered for paper testing (was 2)
   timeframe_alignment_bonus: 20
   sentiment_alignment_bonus: 10
   fear_greed_extreme_bonus: 15
@@ -130,7 +130,7 @@ dashboard:
   host: "0.0.0.0"
   port: 8000
   update_interval_seconds: 30
-  auth_enabled: true
+  auth_enabled: false
   username: "${DASHBOARD_USER}"
   password: "${DASHBOARD_PASSWORD}"
 
