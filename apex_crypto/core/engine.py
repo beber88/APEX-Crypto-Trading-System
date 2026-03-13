@@ -36,6 +36,12 @@ STRATEGY_REGISTRY: dict[str, tuple[str, str]] = {
     "oi_divergence": ("apex_crypto.core.strategies.oi_divergence", "OIDivergenceStrategy"),
     "quant_momentum": ("apex_crypto.core.strategies.momentum_factor", "QuantMomentum"),
     "stat_arb": ("apex_crypto.core.strategies.stat_arb", "PairsTrading"),
+    # New HF strategies (Research Area 5)
+    "vwap_reversion": ("apex_crypto.core.strategies.vwap_reversion", "VWAPReversionStrategy"),
+    "funding_scalp": ("apex_crypto.core.strategies.funding_scalp", "FundingScalpStrategy"),
+    "liquidation_fade": ("apex_crypto.core.strategies.liquidation_fade", "LiquidationFadeStrategy"),
+    "opening_range": ("apex_crypto.core.strategies.opening_range", "OpeningRangeBreakout"),
+    "cross_exchange_momentum": ("apex_crypto.core.strategies.cross_exchange_momentum", "CrossExchangeMomentum"),
 }
 
 
@@ -73,6 +79,14 @@ class TradingEngine:
         self._alt_data_manager = None
         self._storage = None
         self._risk_guards = None
+        # New optimization modules
+        self._compounding_engine = None
+        self._entry_optimizer = None
+        self._exit_optimizer = None
+        self._strategy_tuner = None
+        self._speed_layer = None
+        self._last_trade_won: bool = True
+        self._market_vol_percentile: float = 50.0
 
         # BTC price history for kill switch (Rule 30)
         self._btc_price_history: list[tuple[float, float]] = []  # (timestamp, price)
@@ -143,6 +157,51 @@ class TradingEngine:
         # 6b. Risk guards (Rules 7, 10, 15, 30)
         from apex_crypto.core.risk.guards import RiskGuards
         self._risk_guards = RiskGuards(self._full_config)
+
+        # 6c. Compounding engine (anti-martingale + drawdown-adjusted sizing)
+        try:
+            from apex_crypto.core.risk.compounding import CompoundingEngine
+            self._compounding_engine = CompoundingEngine(
+                self._full_config.get("compounding", {})
+            )
+        except Exception as exc:
+            logger.warning("CompoundingEngine not available: %s", exc)
+
+        # 6d. Entry optimizer (dynamic order type, partial entries)
+        try:
+            from apex_crypto.core.signals.entry_optimizer import EntryOptimizer
+            self._entry_optimizer = EntryOptimizer(
+                self._full_config.get("entry_optimizer", {})
+            )
+        except Exception as exc:
+            logger.warning("EntryOptimizer not available: %s", exc)
+
+        # 6e. Exit optimizer (dynamic TP, time-stop, re-entry)
+        try:
+            from apex_crypto.core.signals.exit_optimizer import ExitOptimizer
+            self._exit_optimizer = ExitOptimizer(
+                self._full_config.get("exit_optimizer", self._full_config.get("risk", {}))
+            )
+        except Exception as exc:
+            logger.warning("ExitOptimizer not available: %s", exc)
+
+        # 6f. Strategy auto-tuner (kill losers, boost winners)
+        try:
+            from apex_crypto.core.signals.strategy_tuner import StrategyTuner
+            self._strategy_tuner = StrategyTuner(
+                self._full_config.get("strategy_tuner", {})
+            )
+        except Exception as exc:
+            logger.warning("StrategyTuner not available: %s", exc)
+
+        # 6g. Speed layer (pre-computation cache)
+        try:
+            from apex_crypto.core.execution.speed_layer import PreComputeCache
+            self._speed_layer = PreComputeCache(
+                self._full_config.get("speed_layer", {})
+            )
+        except Exception as exc:
+            logger.warning("SpeedLayer not available: %s", exc)
 
         # 7. Storage manager (optional — may fail without DB connections)
         try:
@@ -375,17 +434,39 @@ class TradingEngine:
         # Monitor existing positions for exits
         await self._check_exits(symbols)
 
-        # Scan for new entry signals
+        # Pre-compute cache refresh (speed layer)
+        if self._speed_layer:
+            try:
+                await self._speed_layer.refresh(
+                    symbols, self._ohlcv_cache,
+                    self._indicator_engine,
+                    self._full_config.get("risk", {}),
+                    self._equity_stats.get("current_equity", 10_000.0),
+                )
+            except Exception as exc:
+                logger.debug("Speed layer refresh error: %s", exc)
+
+        # Strategy tuner: check if analysis should run
+        if self._strategy_tuner and self._strategy_tuner.should_run_analysis():
+            try:
+                # In production, pull from trade history DB
+                self._strategy_tuner.analyze_performance([])
+            except Exception as exc:
+                logger.debug("Strategy tuner analysis error: %s", exc)
+
+        # Scan for new entry signals (PARALLEL for speed)
         all_aggregated: list[dict[str, Any]] = []
         self._current_signals = []
 
+        # Parallel scan all symbols simultaneously
+        scan_tasks = []
         for symbol in symbols:
-            try:
-                result = await self._scan_symbol(symbol, timeframes)
-                if result:
-                    all_aggregated.append(result)
-            except Exception as exc:
-                logger.warning("Error scanning %s: %s", symbol, exc)
+            scan_tasks.append(self._scan_symbol(symbol, timeframes))
+
+        scan_results = await asyncio.gather(*scan_tasks, return_exceptions=True)
+        for result in scan_results:
+            if result is not None and not isinstance(result, Exception):
+                all_aggregated.append(result)
 
         # Rule 2 (Eugene Ng): Boost signals for relatively strong coins
         if all_aggregated:
@@ -576,6 +657,19 @@ class TradingEngine:
                     if hasattr(s, '_last_signal') and s._last_signal
                 ]
 
+                # Check time-stop from exit optimizer
+                if self._exit_optimizer:
+                    try:
+                        time_stop = self._exit_optimizer.check_time_stop(position)
+                        if time_stop.get("exit", False):
+                            positions_to_close.append((position, 1.0, {
+                                "action": "close_full",
+                                "reason": time_stop["reason"],
+                            }))
+                            continue
+                    except Exception:
+                        pass
+
                 # Check exit conditions
                 indicator_state = {
                     "current_regime": self._current_regimes.get(symbol, {}).get("regime", ""),
@@ -623,8 +717,21 @@ class TradingEngine:
                     if pnl_pct < 0:
                         self._daily_stats["consecutive_losses"] += 1
                         self._daily_stats["last_loss_ts"] = time.time()
+                        self._last_trade_won = False
                     else:
                         self._daily_stats["consecutive_losses"] = 0
+                        self._last_trade_won = True
+
+                    # Record in compounding engine
+                    if self._compounding_engine:
+                        try:
+                            self._compounding_engine.record_trade_result(
+                                won=pnl_pct > 0,
+                                pnl_pct=pnl_pct,
+                                equity=self._equity_stats.get("current_equity", 10_000.0),
+                            )
+                        except Exception:
+                            pass
 
                 self._daily_stats["trades_today"] += 1
 
@@ -680,11 +787,33 @@ class TradingEngine:
             return
 
         # Rule 12 (Eugene Ng): Conviction-based position sizing
-        # 1% risk for normal trades, up to 5% for high-conviction
+        # Enhanced with CompoundingEngine adaptive sizing
         equity = self._equity_stats.get("current_equity", 10_000.0)
         score = abs(opportunity.get("weighted_score", 0))
         num_agreeing = opportunity.get("num_agreeing", 0)
         base_risk_pct = self._full_config.get("risk", {}).get("risk_per_trade_pct", 1.0)
+
+        # Apply compounding engine adaptive risk
+        if self._compounding_engine:
+            try:
+                adaptive = self._compounding_engine.calculate_adaptive_risk(
+                    base_risk_pct,
+                    self._equity_stats,
+                    self._market_vol_percentile,
+                    self._last_trade_won,
+                )
+                base_risk_pct = adaptive.get("risk_pct", base_risk_pct)
+                logger.info("Adaptive risk: %.2f%% (DD mult=%.2f, Vol mult=%.2f)",
+                            base_risk_pct,
+                            adaptive.get("drawdown_multiplier", 1.0),
+                            adaptive.get("volatility_multiplier", 1.0))
+            except Exception as exc:
+                logger.debug("Compounding engine error: %s", exc)
+
+        # Apply strategy tuner asset multiplier
+        if self._strategy_tuner:
+            asset_mult = self._strategy_tuner.get_asset_multiplier(symbol)
+            base_risk_pct *= asset_mult
 
         # High conviction: score >= 75 AND 3+ agreeing strategies → up to 5%
         if score >= 75 and num_agreeing >= 3:
@@ -961,7 +1090,7 @@ class TradingEngine:
 
     def get_state(self) -> dict[str, Any]:
         """Return current engine state for the dashboard."""
-        return {
+        state = {
             "running": self._running,
             "cycle_count": self._cycle_count,
             "last_cycle_time_ms": round(self._last_cycle_time * 1000, 1),
@@ -972,3 +1101,38 @@ class TradingEngine:
             "current_regimes": dict(self._current_regimes),
             "strategies_loaded": len(self._strategies),
         }
+
+        # Add compounding engine stats
+        if self._compounding_engine:
+            try:
+                state["compounding"] = {
+                    "current_risk_pct": getattr(self._compounding_engine, '_current_risk_pct', 1.0),
+                    "consecutive_wins": getattr(self._compounding_engine, '_consecutive_wins', 0),
+                    "consecutive_losses": getattr(self._compounding_engine, '_consecutive_losses', 0),
+                }
+            except Exception:
+                pass
+
+        # Add strategy tuner summary
+        if self._strategy_tuner:
+            try:
+                state["tuner"] = self._strategy_tuner.get_analysis_summary()
+            except Exception:
+                pass
+
+        # Add entry optimizer stats
+        if self._entry_optimizer:
+            try:
+                state["entry_optimizer"] = self._entry_optimizer.get_stats()
+            except Exception:
+                pass
+
+        # Add speed layer cache info
+        if self._speed_layer:
+            try:
+                cached = self._speed_layer.get_all_cached()
+                state["precomputed_symbols"] = len(cached)
+            except Exception:
+                pass
+
+        return state

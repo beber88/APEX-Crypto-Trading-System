@@ -15,35 +15,61 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>APEX Trading Terminal</title>
+<title>APEX Bloomberg Terminal</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <style>
 :root {
-  --bg-primary: #0b0e11; --bg-secondary: #1e2329; --bg-tertiary: #2b3139;
-  --bg-card: #181a20; --border: #2b3139; --text-primary: #eaecef;
-  --text-secondary: #848e9c; --text-muted: #5e6673;
-  --green: #0ecb81; --green-bg: rgba(14,203,129,0.1); --green-dim: #0d9065;
-  --red: #f6465d; --red-bg: rgba(246,70,93,0.1); --red-dim: #c33;
-  --blue: #1e90ff; --blue-bg: rgba(30,144,255,0.1);
-  --yellow: #f0b90b; --yellow-bg: rgba(240,185,11,0.1);
-  --purple: #a855f7; --purple-bg: rgba(168,85,247,0.1);
+  --bg-primary: #0a0e17; --bg-secondary: #111827; --bg-tertiary: #1f2937;
+  --bg-card: #0f1629; --border: #1e293b; --text-primary: #e2e8f0;
+  --text-secondary: #94a3b8; --text-muted: #64748b;
+  --green: #10b981; --green-bg: rgba(16,185,129,0.12); --green-dim: #059669;
+  --red: #ef4444; --red-bg: rgba(239,68,68,0.12); --red-dim: #dc2626;
+  --blue: #3b82f6; --blue-bg: rgba(59,130,246,0.12);
+  --yellow: #f59e0b; --yellow-bg: rgba(245,158,11,0.12);
+  --purple: #8b5cf6; --purple-bg: rgba(139,92,246,0.12);
+  --orange: #f97316;
 }
 * { margin:0; padding:0; box-sizing:border-box; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg-primary); color: var(--text-primary); overflow-x: hidden; }
 
 /* ── Top Bar ── */
-.topbar { background: var(--bg-secondary); border-bottom: 1px solid var(--border); padding: 0 24px; height: 56px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 100; }
-.topbar-left { display: flex; align-items: center; gap: 20px; }
-.logo { font-size: 20px; font-weight: 700; color: var(--yellow); letter-spacing: 1px; }
-.logo span { color: var(--text-secondary); font-weight: 400; font-size: 13px; margin-left: 8px; }
-.mode-pill { padding: 4px 14px; border-radius: 4px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; }
+.topbar { background: linear-gradient(180deg, #111827 0%, #0f172a 100%); border-bottom: 1px solid var(--border); padding: 0 24px; height: 48px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 100; }
+.topbar-left { display: flex; align-items: center; gap: 16px; }
+.logo { font-size: 18px; font-weight: 800; color: var(--yellow); letter-spacing: 2px; font-family: 'Courier New', monospace; }
+.logo span { color: var(--text-muted); font-weight: 400; font-size: 11px; margin-left: 8px; letter-spacing: 0; }
+.mode-pill { padding: 3px 12px; border-radius: 3px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; }
 .mode-live { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-dim); }
-.mode-paper { background: var(--yellow-bg); color: var(--yellow); }
-.topbar-right { display: flex; align-items: center; gap: 16px; font-size: 13px; color: var(--text-secondary); }
-.pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--green); display: inline-block; animation: pulse 2s infinite; }
+.mode-paper { background: var(--yellow-bg); color: var(--yellow); border: 1px solid rgba(245,158,11,0.3); }
+.topbar-center { display: flex; align-items: center; gap: 20px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.topbar-center .label { color: var(--text-muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
+.topbar-center .value { font-weight: 700; font-size: 14px; }
+.topbar-right { display: flex; align-items: center; gap: 16px; font-size: 12px; color: var(--text-secondary); }
+.pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--green); display: inline-block; animation: pulse 2s infinite; box-shadow: 0 0 6px var(--green); }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
-.clock { font-variant-numeric: tabular-nums; }
+@keyframes flash-green { 0% { background: rgba(16,185,129,0.3); } 100% { background: transparent; } }
+@keyframes flash-red { 0% { background: rgba(239,68,68,0.3); } 100% { background: transparent; } }
+.flash-up { animation: flash-green 0.5s ease-out; }
+.flash-down { animation: flash-red 0.5s ease-out; }
+.clock { font-variant-numeric: tabular-nums; font-family: 'Courier New', monospace; }
+
+/* ── Price Ticker ── */
+.ticker-bar { background: var(--bg-primary); border-bottom: 1px solid var(--border); padding: 6px 0; overflow: hidden; white-space: nowrap; }
+.ticker-scroll { display: flex; gap: 32px; animation: ticker-scroll 30s linear infinite; padding: 0 16px; }
+.ticker-item { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.ticker-sym { font-weight: 700; color: var(--text-primary); }
+.ticker-price { font-weight: 600; }
+.ticker-chg { font-size: 11px; font-weight: 600; }
+@keyframes ticker-scroll { 0% { transform: translateX(0); } 100% { transform: translateX(-50%); } }
+
+/* ── Alerts Panel ── */
+.alerts-panel { position: fixed; top: 60px; right: 16px; z-index: 200; display: flex; flex-direction: column; gap: 8px; }
+.alert-toast { padding: 12px 18px; border-radius: 6px; font-size: 12px; font-weight: 600; animation: slide-in 0.3s ease-out, fade-out 0.5s ease-in 7.5s forwards; max-width: 320px; border-left: 3px solid; }
+.alert-trade { background: var(--blue-bg); border-color: var(--blue); color: var(--blue); }
+.alert-tp { background: var(--green-bg); border-color: var(--green); color: var(--green); }
+.alert-sl { background: var(--red-bg); border-color: var(--red); color: var(--red); }
+@keyframes slide-in { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+@keyframes fade-out { from { opacity: 1; } to { opacity: 0; display: none; } }
 
 /* ── KPI Strip ── */
 .kpi-strip { display: grid; grid-template-columns: repeat(6, 1fr); gap: 1px; background: var(--border); border-bottom: 1px solid var(--border); }
@@ -150,46 +176,61 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 <!-- ── Top Bar ── -->
 <div class="topbar">
   <div class="topbar-left">
-    <div class="logo">APEX<span>Trading Terminal</span></div>
+    <div class="logo">APEX<span>Trading Terminal v2.0</span></div>
     <span class="mode-pill" id="mode-pill">--</span>
   </div>
+  <div class="topbar-center">
+    <div><div class="label">Portfolio</div><div class="value" id="k-equity" style="color:var(--green)">--</div></div>
+    <div><div class="label">Daily P&L</div><div class="value" id="k-pnl">--</div></div>
+    <div><div class="label">Open P&L</div><div class="value" id="k-open-pnl">--</div></div>
+    <div><div class="label">Win Rate</div><div class="value" id="k-wr">--</div></div>
+    <div><div class="label">Drawdown</div><div class="value" id="k-dd" style="color:var(--red)">--</div></div>
+  </div>
   <div class="topbar-right">
-    <span><span class="pulse"></span> Engine Running</span>
-    <span class="clock" id="clock">--:--:--</span>
+    <span><span class="pulse"></span> <span id="engine-status">Running</span></span>
+    <span class="clock" id="clock">--:--:-- UTC</span>
   </div>
 </div>
+
+<!-- ── Price Ticker ── -->
+<div class="ticker-bar">
+  <div class="ticker-scroll" id="ticker-scroll"></div>
+</div>
+
+<!-- ── Alerts Panel ── -->
+<div class="alerts-panel" id="alerts-panel"></div>
 
 <!-- ── KPI Strip ── -->
 <div class="kpi-strip">
   <div class="kpi">
     <div class="kpi-label">Portfolio Value</div>
-    <div class="kpi-value" id="k-equity" style="color:var(--green)">--</div>
+    <div class="kpi-value" id="k-equity2" style="color:var(--green)">--</div>
     <div class="kpi-sub" id="k-equity-sub">USDT</div>
   </div>
   <div class="kpi">
     <div class="kpi-label">Daily P&L</div>
-    <div class="kpi-value" id="k-pnl">--</div>
+    <div class="kpi-value" id="k-pnl2">--</div>
     <div class="kpi-sub" id="k-pnl-sub">today</div>
   </div>
   <div class="kpi">
     <div class="kpi-label">Drawdown</div>
-    <div class="kpi-value" id="k-dd" style="color:var(--red)">--</div>
+    <div class="kpi-value" id="k-dd2" style="color:var(--red)">--</div>
     <div class="kpi-sub" id="k-dd-sub">from peak</div>
   </div>
   <div class="kpi">
     <div class="kpi-label">Open Positions</div>
     <div class="kpi-value" id="k-pos" style="color:var(--blue)">0</div>
-    <div class="kpi-sub">of 8 max</div>
+    <div class="kpi-sub">of 12 max</div>
   </div>
   <div class="kpi">
     <div class="kpi-label">Trades Today</div>
     <div class="kpi-value" id="k-trades" style="color:var(--blue)">0</div>
-    <div class="kpi-sub">of 25 max</div>
+    <div class="kpi-sub">of 50 max</div>
   </div>
   <div class="kpi">
-    <div class="kpi-label">Win Rate</div>
-    <div class="kpi-value" id="k-wr">--</div>
-    <div class="kpi-sub">30-day rolling</div>
+    <div class="kpi-label">Strategies</div>
+    <div class="kpi-value" id="k-strats" style="color:var(--purple)">15</div>
+    <div class="kpi-sub">active</div>
   </div>
 </div>
 
@@ -530,10 +571,99 @@ async function refresh() {
   }
 }
 
-addLog('Dashboard initialized');
-addLog('Connecting to APEX Trading Engine...');
-refresh().then(() => addLog('Data loaded successfully'));
-setInterval(() => { refresh().then(() => {}); }, 5000);
+addLog('APEX Terminal v2.0 initialized');
+addLog('Connecting to trading engine...');
+
+// ── Price Ticker ──
+const TICKER_SYMBOLS = ['BTC/USDT','ETH/USDT','SOL/USDT','BNB/USDT','XRP/USDT','DOGE/USDT','AVAX/USDT','LINK/USDT','DOT/USDT','ADA/USDT'];
+let prevPrices = {};
+function updateTicker(positions) {
+  const prices = {};
+  if(positions && positions.positions) {
+    positions.positions.forEach(p => { prices[p.symbol] = p.current_price; });
+  }
+  const container = $('ticker-scroll');
+  if(!container) return;
+  let html = '';
+  TICKER_SYMBOLS.forEach(sym => {
+    const price = prices[sym] || prevPrices[sym] || 0;
+    const prev = prevPrices[sym] || price;
+    const chg = prev > 0 ? ((price - prev) / prev * 100) : 0;
+    const color = chg >= 0 ? 'var(--green)' : 'var(--red)';
+    const arrow = chg >= 0 ? '&#9650;' : '&#9660;';
+    html += '<span class="ticker-item"><span class="ticker-sym">'+sym.replace('/USDT','')+'</span><span class="ticker-price" style="color:'+color+'">$'+fmt(price,price>100?0:2)+'</span><span class="ticker-chg" style="color:'+color+'">'+arrow+' '+fmt(Math.abs(chg),2)+'%</span></span>';
+    prevPrices[sym] = price;
+  });
+  // Duplicate for seamless scroll
+  container.innerHTML = html + html;
+}
+
+// ── WebSocket with auto-reconnect ──
+let ws = null;
+let wsRetryDelay = 1000;
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(proto + '//' + location.host + '/ws');
+  ws.onopen = () => {
+    wsRetryDelay = 1000;
+    addLog('WebSocket connected (real-time mode)');
+    $('engine-status').textContent = 'Live';
+  };
+  ws.onmessage = (evt) => {
+    try {
+      const msg = JSON.parse(evt.data);
+      if(msg.type === 'update' && msg.data) {
+        handleWSUpdate(msg.data);
+      } else if(msg.type === 'trade_alert') {
+        showAlert(msg.event, msg.symbol);
+      }
+    } catch(e) {}
+  };
+  ws.onclose = () => {
+    $('engine-status').textContent = 'Reconnecting...';
+    setTimeout(connectWS, Math.min(wsRetryDelay, 16000));
+    wsRetryDelay *= 2;
+  };
+  ws.onerror = () => { ws.close(); };
+}
+
+function handleWSUpdate(data) {
+  // Top bar quick stats
+  const eq = data.portfolio_value || data.equity || 0;
+  if($('k-equity')) $('k-equity').textContent = fmtK(eq);
+  if($('k-equity2')) $('k-equity2').textContent = fmtK(eq);
+  const pnl = data.daily_pnl_pct || 0;
+  if($('k-pnl')) { $('k-pnl').textContent = (pnl>=0?'+':'')+fmt(pnl)+'%'; $('k-pnl').style.color = pnl>=0?'var(--green)':'var(--red)'; }
+  if($('k-pnl2')) { $('k-pnl2').textContent = (pnl>=0?'+':'')+fmt(pnl)+'%'; $('k-pnl2').style.color = pnl>=0?'var(--green)':'var(--red)'; }
+  if($('k-open-pnl')) { const op = data.open_pnl||0; $('k-open-pnl').textContent = (op>=0?'+':'')+fmt(op); $('k-open-pnl').style.color = op>=0?'var(--green)':'var(--red)'; }
+  const dd = data.drawdown_pct || 0;
+  if($('k-dd')) $('k-dd').textContent = fmt(dd)+'%';
+  if($('k-dd2')) $('k-dd2').textContent = fmt(dd)+'%';
+  const wr = (data.win_rate || 0.5) * 100;
+  if($('k-wr')) { $('k-wr').textContent = fmt(wr,0)+'%'; $('k-wr').style.color = wr>=50?'var(--green)':'var(--red)'; }
+}
+
+// ── Alerts ──
+function showAlert(type, symbol) {
+  const panel = $('alerts-panel');
+  if(!panel) return;
+  const cls = type.includes('close') ? 'alert-sl' : type.includes('tp') ? 'alert-tp' : 'alert-trade';
+  const msg = type === 'position_closed' ? 'Position closed: '+symbol : 'New signal: '+symbol;
+  const div = document.createElement('div');
+  div.className = 'alert-toast ' + cls;
+  div.textContent = msg;
+  panel.appendChild(div);
+  setTimeout(() => { div.remove(); }, 8000);
+}
+
+// Start WebSocket connection
+connectWS();
+
+// Fallback: REST polling every 2 seconds
+refresh().then(() => addLog('Initial data loaded'));
+setInterval(() => { refresh().then(() => {}); }, 2000);
+// Ticker update every 1 second
+setInterval(() => { api('positions').then(p => updateTicker(p)); }, 1000);
 </script>
 </body>
 </html>"""

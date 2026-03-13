@@ -41,7 +41,7 @@ logger = get_logger("dashboard.api.routes")
 # ---------------------------------------------------------------------------
 _VERSION: str = "1.0.0"
 _SYSTEM_NAME: str = "APEX Crypto Trading System"
-_WS_BROADCAST_INTERVAL: float = 30.0
+_WS_BROADCAST_INTERVAL: float = 1.0  # OPTIMIZED: 1s real-time updates (was 30s)
 
 # ---------------------------------------------------------------------------
 # Module-level mutable state
@@ -557,6 +557,46 @@ async def resume_trading(
     return {"status": "resumed"}
 
 
+@app.post("/api/close/{symbol}")
+async def close_position(
+    symbol: str,
+    background_tasks: BackgroundTasks,
+) -> dict[str, Any]:
+    """Close a specific position by symbol.
+
+    Args:
+        symbol: The trading pair to close (URL-encoded).
+        background_tasks: FastAPI background task scheduler.
+
+    Returns:
+        Dictionary with close status.
+    """
+    store = _store(app)
+    if store is None:
+        return {"status": "error", "message": "No engine connected"}
+
+    # Signal the engine to close this position
+    try:
+        engine = store._engine
+        positions = [p for p in engine._open_positions if p.get("symbol") == symbol]
+        if not positions:
+            return {"status": "error", "message": f"No open position for {symbol}"}
+
+        for pos in positions:
+            await engine._close_position(pos, 1.0, {"reason": "Manual close via dashboard"})
+
+        await ws_manager.broadcast({
+            "type": "trade_alert",
+            "event": "position_closed",
+            "symbol": symbol,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+
+        return {"status": "closed", "symbol": symbol}
+    except Exception as exc:
+        return {"status": "error", "message": str(exc)}
+
+
 @app.get("/api/metrics", response_class=PlainTextResponse)
 async def get_metrics() -> str:
     """Return Prometheus-compatible metrics in text exposition format.
@@ -863,13 +903,44 @@ def _build_update_payload(store: Any = None) -> dict[str, Any]:
             },
         }
 
+    # Build comprehensive real-time payload
+    current_equity = getattr(store, "current_equity", 0.0)
+    peak_equity = getattr(store, "peak_equity", 0.0)
+    risk_metrics = getattr(store, "risk_metrics", {})
+    positions = getattr(store, "open_positions", [])
+
+    # Calculate open P&L
+    open_pnl = 0.0
+    for pos in positions:
+        entry = pos.get("entry_price", 0)
+        current = pos.get("current_price", 0)
+        amount = pos.get("amount", 0)
+        if entry > 0 and current > 0:
+            if pos.get("direction") == "long":
+                open_pnl += (current - entry) * amount
+            else:
+                open_pnl += (entry - current) * amount
+
+    daily_pnl_pct = risk_metrics.get("daily_loss_pct", 0.0)
+    drawdown_pct = ((peak_equity - current_equity) / peak_equity * 100) if peak_equity > 0 else 0.0
+
     return {
         "type": "update",
         "data": {
-            "equity": getattr(store, "current_equity", 0.0),
-            "positions": getattr(store, "open_positions", []),
+            "portfolio_value": current_equity,
+            "daily_pnl": daily_pnl_pct * current_equity / 100 if current_equity else 0,
+            "daily_pnl_pct": daily_pnl_pct,
+            "open_pnl": round(open_pnl, 2),
+            "closed_pnl": round(daily_pnl_pct * current_equity / 100 - open_pnl, 2) if current_equity else 0,
+            "win_rate": getattr(store, "performance_30d", {}).get("win_rate_30d", 0.5),
+            "equity": current_equity,
+            "peak_equity": peak_equity,
+            "drawdown_pct": round(drawdown_pct, 2),
+            "positions": positions,
             "signals": getattr(store, "current_signals", []),
-            "risk_metrics": getattr(store, "risk_metrics", {}),
+            "risk_metrics": risk_metrics,
+            "regimes": getattr(store, "current_regimes", {}),
+            "fear_greed": getattr(store, "fear_greed", {}).get("value", 50),
             "timestamp": now,
         },
     }

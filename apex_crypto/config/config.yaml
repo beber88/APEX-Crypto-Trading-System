@@ -11,7 +11,7 @@ system:
   timezone: "UTC"
 
 engine:
-  cycle_interval_seconds: 30        # Run trading cycle every 30s
+  cycle_interval_seconds: 10        # OPTIMIZED: 10s scan interval (was 30s)
   data_refresh_seconds: 120         # Refresh OHLCV data every 2 minutes
 
 exchange:
@@ -86,8 +86,8 @@ risk:
   tp2_close_pct: 0.35
   daily_loss_limit_pct: 3.0      # Pause trading
   max_drawdown_pct: 12.0         # Full system halt
-  max_trades_per_day: 25
-  max_open_positions: 8
+  max_trades_per_day: 50          # OPTIMIZED: doubled from 25
+  max_open_positions: 12           # OPTIMIZED: increased from 8
   consecutive_loss_cooldown_minutes: 120
   consecutive_loss_threshold: 3
   cooldown_elevated_score: 80
@@ -108,10 +108,14 @@ risk:
   volume_mcap_ratio_alert: 1.0   # Alert when 24h vol > market cap
 
 signals:
-  full_position_score: 60        # Lowered for paper testing (was 75)
-  half_position_score: 40        # Lowered for paper testing (was 60)
+  full_position_score: 60        # Paper testing threshold
+  half_position_score: 40        # Paper testing threshold
   conflict_threshold: 40         # Max disagreement between strategies
-  min_agreeing_strategies: 1     # Lowered for paper testing (was 2)
+  min_agreeing_strategies: 1     # Paper testing (live: 2)
+  # A/B test thresholds (odd hours: 55, even hours: 65)
+  ab_test_enabled: true
+  ab_test_odd_hour_score: 55
+  ab_test_even_hour_score: 65
   timeframe_alignment_bonus: 20
   sentiment_alignment_bonus: 10
   # Rule 3 (GCR): Schelling Point bonus for round numbers
@@ -130,10 +134,66 @@ strategies:
   breakout: {enabled: true, volume_zscore_min: 2.5, confirm_candles: 2}
   smc: {enabled: true, htf_bias_tf: "1d", structure_tf: "4h", entry_tf: "15m"}
   scalping: {enabled: true, max_trades_per_session: 10, min_win_rate: 0.42,
-             assets: ["BTC/USDT", "ETH/USDT"], stop_pct: 0.004, target_pct: 0.007}
+             assets: ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"],
+             stop_pct: 0.004, target_pct: 0.007,
+             min_24h_volume: 50000000, max_spread_pct: 0.05}
   funding_rate: {enabled: true, long_bias_threshold: -0.0005, short_bias_threshold: 0.001}
   swing: {enabled: true, primary_tf: "1d", entry_tf: "4h", hold_days_max: 10}
   oi_divergence: {enabled: true, rsi_low: 35, rsi_high: 70, timeframe: "4h"}
+  # New HF strategies
+  vwap_reversion: {enabled: true, assets: ["BTC/USDT", "ETH/USDT", "SOL/USDT"],
+                   deviation_pct: 0.004, stop_pct: 0.0035, timeframe: "5m"}
+  funding_scalp: {enabled: true, extreme_rate: 0.0015, stop_pct: 0.005,
+                  target_pct_min: 0.005, target_pct_max: 0.01}
+  liquidation_fade: {enabled: true, min_liquidation_usd: 5000000,
+                     stop_pct: 0.01, target_pct_min: 0.015, target_pct_max: 0.02}
+  opening_range: {enabled: true, range_minutes: 30, volume_zscore_min: 2.0,
+                  target_multiplier: 2.0}
+  cross_exchange_momentum: {enabled: true, assets: ["BTC/USDT", "ETH/USDT", "SOL/USDT"],
+                            min_move_pct: 0.0015, stop_pct: 0.002,
+                            target_pct_min: 0.002, target_pct_max: 0.004}
+
+# Entry optimization
+entry_optimizer:
+  fill_rate_window: 100
+  fill_rate_threshold: 0.60
+  partial_entry_enabled: true
+  partial_entry_first_pct: 0.50
+  partial_entry_pullback_pct: 0.003
+  partial_entry_timeout_seconds: 300
+  high_vol_atr_percentile: 70
+  low_vol_atr_percentile: 30
+  sentiment_override_threshold: 0.8
+  sentiment_score_reduction: 5
+
+# Exit optimization
+exit_optimizer:
+  time_stop_hours: 48
+  time_stop_breakeven_buffer_pct: 0.001
+  reentry_enabled: true
+  reentry_pullback_r: 0.3
+  reentry_min_score: 50
+  regime_tp_overrides:
+    STRONG_BULL: {tp1_r: 2.0, tp2_r: 4.0, tp3_trail_atr: 2.0}
+    RANGING: {tp1_r: 1.0, tp2_r: 1.5, tp3_trail_atr: 1.0}
+    CHAOS: {tp1_r: 1.0, tp2_r: 2.0, tp3_trail_atr: 0.75}
+
+# Compounding engine
+compounding:
+  anti_martingale_step: 0.10
+  anti_martingale_floor: 0.5
+  anti_martingale_ceiling: 3.0
+  drawdown_tiers:
+    - {min: 0, max: 3, multiplier: 1.0}
+    - {min: 3, max: 6, multiplier: 0.7}
+    - {min: 6, max: 9, multiplier: 0.5}
+    - {min: 9, max: 12, multiplier: 0.25}
+  vol_low_percentile: 30
+  vol_high_percentile: 70
+  vol_low_multiplier: 1.5
+  vol_high_multiplier: 0.5
+  compound_frequency: 10
+  equity_snapshot_interval_seconds: 3600
 
 ml:
   regime_model_path: "./ml/models/regime_classifier.pkl"
@@ -147,7 +207,7 @@ ml:
 dashboard:
   host: "0.0.0.0"
   port: 8000
-  update_interval_seconds: 30
+  update_interval_seconds: 1    # OPTIMIZED: 1s real-time updates (was 30s)
   auth_enabled: false
   username: "${DASHBOARD_USER}"
   password: "${DASHBOARD_PASSWORD}"
