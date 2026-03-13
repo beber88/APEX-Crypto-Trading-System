@@ -58,8 +58,26 @@ class RiskGuards:
             ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"],
         )
 
+        # Rule 30 (Goodman): Black Swan kill switch
+        self.kill_switch_drop_pct: float = risk_cfg.get("kill_switch_drop_pct", 20.0)
+        self.kill_switch_window_minutes: int = int(
+            risk_cfg.get("kill_switch_window_minutes", 60)
+        )
+        # Rule 15 (Eugene Ng): Break-even stop trigger
+        self.breakeven_trigger_pct: float = risk_cfg.get("breakeven_trigger_pct", 1.5)
+        # Rule 10 (GCR): Block shorts on low-cap coins
+        self.min_short_market_cap_usd: float = risk_cfg.get(
+            "min_short_market_cap_usd", 500_000_000
+        )
+        # Rule 7 (GCR): Volume vs market cap peak alert
+        self.volume_mcap_ratio_alert: float = risk_cfg.get(
+            "volume_mcap_ratio_alert", 1.0
+        )
+
         # Flash-crash halt state
         self._flash_crash_halt_until: float = 0.0
+        # Kill switch state
+        self._kill_switch_triggered: bool = False
 
         log_with_data(
             logger,
@@ -396,6 +414,219 @@ class RiskGuards:
         return restrictions
 
     # ------------------------------------------------------------------
+    # Rule 30: Black Swan Kill Switch (Goodman)
+    # ------------------------------------------------------------------
+
+    def check_kill_switch(
+        self,
+        btc_price_now: float,
+        btc_price_1h_ago: float,
+    ) -> tuple[bool, str]:
+        """Detect a broad market crash and trigger emergency close-all.
+
+        If BTC drops more than ``kill_switch_drop_pct`` (default 20%) in
+        the configured window (default 60 min), the kill switch fires.
+        All positions should be closed and converted to stablecoin.
+
+        Args:
+            btc_price_now: Current BTC/USDT price.
+            btc_price_1h_ago: BTC/USDT price 1 hour ago.
+
+        Returns:
+            ``(is_safe, message)``.  ``is_safe`` is ``False`` when the
+            kill switch has been triggered.
+        """
+        if self._kill_switch_triggered:
+            return False, "KILL SWITCH ACTIVE — all trading halted, close all positions"
+
+        if btc_price_1h_ago <= 0:
+            return True, "Cannot assess kill switch — no historical BTC price"
+
+        drop_pct = ((btc_price_1h_ago - btc_price_now) / btc_price_1h_ago) * 100.0
+
+        if drop_pct >= self.kill_switch_drop_pct:
+            self._kill_switch_triggered = True
+            msg = (
+                f"BLACK SWAN KILL SWITCH: BTC dropped {drop_pct:.2f}% in "
+                f"{self.kill_switch_window_minutes} min "
+                f"(threshold {self.kill_switch_drop_pct:.1f}%) — "
+                f"EMERGENCY: close ALL positions, convert to USDC"
+            )
+            log_with_data(
+                logger,
+                "critical",
+                msg,
+                {
+                    "btc_price_now": btc_price_now,
+                    "btc_price_1h_ago": btc_price_1h_ago,
+                    "drop_pct": round(drop_pct, 4),
+                    "threshold_pct": self.kill_switch_drop_pct,
+                },
+            )
+            return False, msg
+
+        return True, f"Kill switch safe (BTC drop {drop_pct:.2f}%)"
+
+    @property
+    def is_kill_switch_triggered(self) -> bool:
+        """Whether the kill switch has been triggered."""
+        return self._kill_switch_triggered
+
+    def reset_kill_switch(self) -> None:
+        """Manually reset the kill switch after operator review."""
+        self._kill_switch_triggered = False
+        log_with_data(logger, "warning", "Kill switch manually reset by operator", {})
+
+    # ------------------------------------------------------------------
+    # Rule 10: Block shorts on low-cap coins (GCR)
+    # ------------------------------------------------------------------
+
+    def check_short_market_cap(
+        self,
+        market_cap_usd: float,
+        direction: str,
+    ) -> tuple[bool, str]:
+        """Block short positions on coins with low market cap.
+
+        Low-cap coins have extreme volatility that can liquidate short
+        positions instantly. Only allow shorts on coins with market cap
+        above ``min_short_market_cap_usd`` (default $500M).
+
+        Args:
+            market_cap_usd: Market capitalisation in USD.
+            direction: ``"long"`` or ``"short"``.
+
+        Returns:
+            ``(is_safe, message)``.
+        """
+        if direction.lower() != "short":
+            return True, "Long position — no market cap restriction"
+
+        if market_cap_usd <= 0:
+            # If we can't determine market cap, block shorts on unknown coins
+            msg = "SHORT BLOCKED: unknown market cap — cannot short unverified assets"
+            log_with_data(logger, "warning", msg, {"direction": direction})
+            return False, msg
+
+        if market_cap_usd < self.min_short_market_cap_usd:
+            msg = (
+                f"SHORT BLOCKED on low-cap: market cap ${market_cap_usd:,.0f} "
+                f"below ${self.min_short_market_cap_usd:,.0f} minimum"
+            )
+            log_with_data(
+                logger,
+                "warning",
+                msg,
+                {
+                    "market_cap_usd": market_cap_usd,
+                    "min_required": self.min_short_market_cap_usd,
+                },
+            )
+            return False, msg
+
+        return True, f"Market cap ${market_cap_usd:,.0f} sufficient for short"
+
+    # ------------------------------------------------------------------
+    # Rule 7: Volume vs Market Cap peak alert (GCR)
+    # ------------------------------------------------------------------
+
+    def check_volume_mcap_ratio(
+        self,
+        volume_24h: float,
+        market_cap_usd: float,
+    ) -> tuple[bool, str]:
+        """Alert when 24h trading volume exceeds market cap.
+
+        When volume surpasses the total market cap, it signals a potential
+        market top — the asset is likely being heavily traded by speculators
+        and a reversal is imminent.
+
+        Args:
+            volume_24h: 24-hour trading volume in USD.
+            market_cap_usd: Market capitalisation in USD.
+
+        Returns:
+            ``(is_warning, message)``.  ``is_warning`` is ``True`` when
+            the ratio exceeds the threshold (peak signal detected).
+        """
+        if market_cap_usd <= 0:
+            return False, "Cannot assess volume/mcap ratio — no market cap data"
+
+        ratio = volume_24h / market_cap_usd
+
+        if ratio >= self.volume_mcap_ratio_alert:
+            msg = (
+                f"PEAK WARNING: 24h volume ${volume_24h:,.0f} is {ratio:.2f}x "
+                f"market cap ${market_cap_usd:,.0f} — potential top, look for exit"
+            )
+            log_with_data(
+                logger,
+                "warning",
+                msg,
+                {
+                    "volume_24h": volume_24h,
+                    "market_cap_usd": market_cap_usd,
+                    "ratio": round(ratio, 4),
+                    "threshold": self.volume_mcap_ratio_alert,
+                },
+            )
+            return True, msg
+
+        return False, f"Volume/mcap ratio {ratio:.2f} within normal range"
+
+    # ------------------------------------------------------------------
+    # Rule 15: Break-even stop check (Eugene Ng)
+    # ------------------------------------------------------------------
+
+    def should_move_to_breakeven(
+        self,
+        entry_price: float,
+        current_price: float,
+        direction: str,
+    ) -> bool:
+        """Check if a position's stop loss should be moved to break-even.
+
+        After price moves ``breakeven_trigger_pct`` in the profitable
+        direction, the stop loss should be moved to entry price to
+        protect capital.
+
+        Args:
+            entry_price: Original entry price.
+            current_price: Current market price.
+            direction: ``"long"`` or ``"short"``.
+
+        Returns:
+            ``True`` if stop should be moved to break-even.
+        """
+        if entry_price <= 0:
+            return False
+
+        if direction.lower() == "long":
+            profit_pct = ((current_price - entry_price) / entry_price) * 100.0
+        elif direction.lower() == "short":
+            profit_pct = ((entry_price - current_price) / entry_price) * 100.0
+        else:
+            return False
+
+        should_move = profit_pct >= self.breakeven_trigger_pct
+
+        if should_move:
+            log_with_data(
+                logger,
+                "info",
+                "Break-even stop triggered",
+                {
+                    "entry_price": entry_price,
+                    "current_price": current_price,
+                    "direction": direction,
+                    "profit_pct": round(profit_pct, 4),
+                    "trigger_pct": self.breakeven_trigger_pct,
+                },
+            )
+
+        return should_move
+
+    # ------------------------------------------------------------------
     # Aggregate guard runner
     # ------------------------------------------------------------------
 
@@ -493,6 +724,31 @@ class RiskGuards:
                 "CHAOS regime: leverage capped at 1x, size halved, Tier 1 only"
             )
 
+        # 7. Kill switch (Rule 30)
+        ks_safe, ks_msg = self.check_kill_switch(
+            market_data.get("btc_price_now", 0.0),
+            market_data.get("btc_price_1h_ago", 0.0),
+        )
+        if not ks_safe:
+            blocks.append(ks_msg)
+
+        # 8. Short market cap block (Rule 10)
+        mcap = market_data.get("market_cap_usd", 0.0)
+        if mcap > 0:
+            mcap_safe, mcap_msg = self.check_short_market_cap(
+                mcap, direction,
+            )
+            if not mcap_safe:
+                blocks.append(mcap_msg)
+
+        # 9. Volume vs market cap peak warning (Rule 7)
+        if mcap > 0:
+            is_peak, peak_msg = self.check_volume_mcap_ratio(
+                market_data.get("volume_24h", 0.0), mcap,
+            )
+            if is_peak:
+                warnings.append(peak_msg)
+
         can_trade = len(blocks) == 0
 
         result: dict[str, Any] = {
@@ -502,6 +758,7 @@ class RiskGuards:
             "allowed_tiers": regime_restrictions["allowed_tiers"],
             "warnings": warnings,
             "blocks": blocks,
+            "kill_switch": not ks_safe,
         }
 
         log_with_data(

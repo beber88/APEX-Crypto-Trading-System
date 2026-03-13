@@ -72,6 +72,10 @@ class TradingEngine:
         self._decision_engine = None
         self._alt_data_manager = None
         self._storage = None
+        self._risk_guards = None
+
+        # BTC price history for kill switch (Rule 30)
+        self._btc_price_history: list[tuple[float, float]] = []  # (timestamp, price)
 
         # Runtime state
         self._open_positions: list[dict[str, Any]] = []
@@ -135,6 +139,10 @@ class TradingEngine:
         # 6. Decision engine
         from apex_crypto.core.signals.decision import TradeDecisionEngine
         self._decision_engine = TradeDecisionEngine(self._full_config)
+
+        # 6b. Risk guards (Rules 7, 10, 15, 30)
+        from apex_crypto.core.risk.guards import RiskGuards
+        self._risk_guards = RiskGuards(self._full_config)
 
         # 7. Storage manager (optional — may fail without DB connections)
         try:
@@ -340,6 +348,14 @@ class TradingEngine:
     ) -> None:
         """Execute one full trading cycle across all symbols."""
 
+        # Rule 30: Kill switch check — emergency close all on broad market crash
+        await self._check_kill_switch()
+        if self._risk_guards and self._risk_guards.is_kill_switch_triggered:
+            log_with_data(logger, "critical",
+                          "KILL SWITCH ACTIVE — closing all positions")
+            await self._emergency_close_all()
+            return
+
         # Check if trading should be paused
         should_pause, pause_reason = self._decision_engine.should_pause_trading(
             self._daily_stats, self._equity_stats,
@@ -352,6 +368,9 @@ class TradingEngine:
 
         # Update equity
         await self._update_equity()
+
+        # Rule 15: Check break-even stops for open positions
+        self._update_breakeven_stops()
 
         # Monitor existing positions for exits
         await self._check_exits(symbols)
@@ -367,6 +386,10 @@ class TradingEngine:
                     all_aggregated.append(result)
             except Exception as exc:
                 logger.warning("Error scanning %s: %s", symbol, exc)
+
+        # Rule 2 (Eugene Ng): Boost signals for relatively strong coins
+        if all_aggregated:
+            self._apply_relative_strength_bonus(all_aggregated)
 
         # Rank opportunities and execute
         if all_aggregated:
@@ -461,8 +484,25 @@ class TradingEngine:
             elif isinstance(fg, (int, float)):
                 fear_greed = int(fg)
 
+        # Get current price and recent candles for Rule 3/6
+        current_price = 0.0
+        recent_candles: list[dict] = []
+        entry_tf = "1h" if "1h" in data else ("4h" if "4h" in data else None)
+        if entry_tf and entry_tf in data:
+            df = data[entry_tf]
+            if not df.empty:
+                current_price = float(df["close"].iloc[-1])
+                # Last 5 candles for Rule 6 (three candle confirmation)
+                tail = df.tail(5)
+                recent_candles = [
+                    {"open": float(r["open"]), "close": float(r["close"])}
+                    for _, r in tail.iterrows()
+                ]
+
         aggregated = self._aggregator.apply_bonuses(
-            aggregated, tf_alignment, sentiment, fear_greed
+            aggregated, tf_alignment, sentiment, fear_greed,
+            current_price=current_price,
+            recent_candles=recent_candles,
         )
 
         return aggregated
@@ -639,9 +679,24 @@ class TradingEngine:
                         opportunity.get("num_agreeing", 0))
             return
 
-        # Calculate position size
+        # Rule 12 (Eugene Ng): Conviction-based position sizing
+        # 1% risk for normal trades, up to 5% for high-conviction
         equity = self._equity_stats.get("current_equity", 10_000.0)
-        position_size_pct = decision.get("position_size_pct", 2.5) / 100.0
+        score = abs(opportunity.get("weighted_score", 0))
+        num_agreeing = opportunity.get("num_agreeing", 0)
+        base_risk_pct = self._full_config.get("risk", {}).get("risk_per_trade_pct", 1.0)
+
+        # High conviction: score >= 75 AND 3+ agreeing strategies → up to 5%
+        if score >= 75 and num_agreeing >= 3:
+            conviction_risk_pct = min(base_risk_pct * 5, 5.0)
+            logger.info("HIGH CONVICTION trade for %s: risk=%.1f%% (score=%d, agreeing=%d)",
+                        symbol, conviction_risk_pct, score, num_agreeing)
+        elif score >= 60 and num_agreeing >= 2:
+            conviction_risk_pct = min(base_risk_pct * 2.5, 3.0)
+        else:
+            conviction_risk_pct = base_risk_pct
+
+        position_size_pct = decision.get("position_size_pct", conviction_risk_pct) / 100.0
         position_value = equity * position_size_pct
 
         # Get entry price
@@ -760,6 +815,145 @@ class TradingEngine:
                 )
         except Exception:
             pass
+
+    # ------------------------------------------------------------------
+    # Rule 2: Relative Strength Scanner (Eugene Ng)
+    # ------------------------------------------------------------------
+
+    def _apply_relative_strength_bonus(
+        self, aggregated_signals: list[dict[str, Any]]
+    ) -> None:
+        """Boost scores for coins showing relative strength vs BTC.
+
+        When BTC is pulling back, coins that drop less show relative
+        strength and will likely rally harder on recovery. Add a bonus
+        to their aggregated scores.
+        """
+        btc_data = self._ohlcv_cache.get("BTC/USDT", {})
+        btc_1h = btc_data.get("1h") if btc_data else None
+        if btc_1h is None or len(btc_1h) < 24:
+            return
+
+        # Check if BTC is in a pullback (24h return < -2%)
+        btc_close_now = float(btc_1h["close"].iloc[-1])
+        btc_close_24h = float(btc_1h["close"].iloc[-24])
+        if btc_close_24h <= 0:
+            return
+        btc_return = (btc_close_now - btc_close_24h) / btc_close_24h * 100.0
+
+        if btc_return >= -2.0:
+            return  # BTC not in pullback, no relative strength analysis
+
+        # Calculate each symbol's 24h return
+        symbol_returns: dict[str, float] = {}
+        for sig in aggregated_signals:
+            symbol = sig["symbol"]
+            sym_data = self._ohlcv_cache.get(symbol, {})
+            sym_1h = sym_data.get("1h")
+            if sym_1h is None or len(sym_1h) < 24:
+                continue
+            close_now = float(sym_1h["close"].iloc[-1])
+            close_24h = float(sym_1h["close"].iloc[-24])
+            if close_24h > 0:
+                symbol_returns[symbol] = (close_now - close_24h) / close_24h * 100.0
+
+        if not symbol_returns:
+            return
+
+        # Rank by relative strength (least negative = strongest)
+        sorted_symbols = sorted(symbol_returns.items(), key=lambda x: x[1], reverse=True)
+        top_strong = {s for s, _ in sorted_symbols[:max(1, len(sorted_symbols) // 3)]}
+
+        for sig in aggregated_signals:
+            if sig["symbol"] in top_strong:
+                old_score = sig["weighted_score"]
+                bonus = 10 if old_score > 0 else -10  # same sign as direction
+                sig["weighted_score"] = round(old_score + bonus, 2)
+                sig.setdefault("bonus_breakdown", {})["relative_strength"] = abs(bonus)
+                logger.info("Rule 2: Relative strength bonus for %s (24h: %.1f%% vs BTC: %.1f%%)",
+                            sig["symbol"],
+                            symbol_returns.get(sig["symbol"], 0),
+                            btc_return)
+
+    # ------------------------------------------------------------------
+    # Rule 30: Kill switch helpers (Goodman)
+    # ------------------------------------------------------------------
+
+    async def _check_kill_switch(self) -> None:
+        """Track BTC price and check for black swan event."""
+        if not self._risk_guards:
+            return
+        try:
+            btc_price = await self._get_current_price("BTC/USDT")
+            if btc_price <= 0:
+                return
+            now = time.time()
+            self._btc_price_history.append((now, btc_price))
+            # Keep only last 2 hours of data
+            cutoff = now - 7200
+            self._btc_price_history = [
+                (ts, p) for ts, p in self._btc_price_history if ts > cutoff
+            ]
+            # Find price from 1 hour ago
+            target_ts = now - 3600
+            btc_price_1h_ago = 0.0
+            for ts, p in self._btc_price_history:
+                if ts <= target_ts:
+                    btc_price_1h_ago = p
+            if btc_price_1h_ago > 0:
+                self._risk_guards.check_kill_switch(btc_price, btc_price_1h_ago)
+        except Exception as exc:
+            logger.debug("Kill switch check error: %s", exc)
+
+    async def _emergency_close_all(self) -> None:
+        """Emergency close all positions (Rule 30 kill switch)."""
+        log_with_data(logger, "critical",
+                      "EMERGENCY CLOSE ALL — Black Swan Kill Switch activated",
+                      {"open_positions": len(self._open_positions)})
+        for position in list(self._open_positions):
+            try:
+                await self._broker.close_position(position["symbol"])
+                log_with_data(logger, "info", "Emergency closed position", {
+                    "symbol": position["symbol"],
+                })
+            except Exception as exc:
+                logger.error("Failed to emergency close %s: %s",
+                             position["symbol"], exc)
+        self._open_positions.clear()
+
+    # ------------------------------------------------------------------
+    # Rule 15: Break-even stop management (Eugene Ng)
+    # ------------------------------------------------------------------
+
+    def _update_breakeven_stops(self) -> None:
+        """Move stop loss to entry price when profit exceeds threshold."""
+        if not self._risk_guards:
+            return
+        for position in self._open_positions:
+            entry_price = position.get("entry_price", 0)
+            current_price = position.get("current_price", 0)
+            direction = position.get("direction", "long")
+            current_stop = position.get("stop_loss", 0)
+
+            if current_price <= 0 or entry_price <= 0:
+                continue
+
+            # Skip if already at break-even or better
+            if direction == "long" and current_stop >= entry_price:
+                continue
+            if direction == "short" and 0 < current_stop <= entry_price:
+                continue
+
+            if self._risk_guards.should_move_to_breakeven(
+                entry_price, current_price, direction
+            ):
+                position["stop_loss"] = entry_price
+                log_with_data(logger, "info", "Stop moved to break-even", {
+                    "symbol": position.get("symbol"),
+                    "entry_price": entry_price,
+                    "current_price": current_price,
+                    "direction": direction,
+                })
 
     # ------------------------------------------------------------------
     # State accessors (for dashboard)

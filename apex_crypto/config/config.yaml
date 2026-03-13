@@ -67,12 +67,12 @@ smc:
   sr_cluster_tolerance: 0.003  # 0.3% price clustering tolerance
 
 risk:
-  risk_per_trade_pct: 1.0        # % of portfolio at risk per trade
-  max_position_pct: 5.0          # Max single position size
+  risk_per_trade_pct: 1.0        # Rule 12: 1% base risk (Eugene Ng)
+  max_position_pct: 5.0          # Rule 12: up to 5% for high conviction
   max_asset_concentration_pct: 10.0
   correlation_reduce_threshold: 0.75
   correlation_reduce_factor: 0.4
-  min_rr_ratio: 1.8              # Skip trades below this R:R
+  min_rr_ratio: 3.0              # Rule 14: min 1:3 R:R (Goodman)
   atr_stop_multiplier: 1.5
   trailing_stop_atr_mult: 1.0
   tp1_r: 1.5
@@ -93,6 +93,15 @@ risk:
   flash_crash_halt_minutes: 30
   min_spread_pct: 0.15
   funding_rate_long_halt: 0.003  # 0.3% — close longs
+  # Rule 30 (Goodman): Black Swan kill switch
+  kill_switch_drop_pct: 20.0     # % broad market drop in 1hr triggers emergency close
+  kill_switch_window_minutes: 60
+  # Rule 15 (Eugene Ng): Break-even stop
+  breakeven_trigger_pct: 1.5     # Move SL to entry after X% profit
+  # Rule 10 (GCR): Block shorts on low-cap coins
+  min_short_market_cap_usd: 500000000  # $500M min market cap for shorts
+  # Rule 7 (GCR): Volume vs market cap peak alert
+  volume_mcap_ratio_alert: 1.0   # Alert when 24h vol > market cap
 
 signals:
   full_position_score: 60        # Lowered for paper testing (was 75)
@@ -101,6 +110,11 @@ signals:
   min_agreeing_strategies: 1     # Lowered for paper testing (was 2)
   timeframe_alignment_bonus: 20
   sentiment_alignment_bonus: 10
+  # Rule 3 (GCR): Schelling Point bonus for round numbers
+  round_number_bonus: 10
+  round_number_tolerance_pct: 0.5   # within 0.5% of a round number
+  # Rule 6 (Nison): Three candle confirmation
+  min_confirmation_candles: 3
   fear_greed_extreme_bonus: 15
   fear_greed_extreme_low: 15
   fear_greed_extreme_high: 85

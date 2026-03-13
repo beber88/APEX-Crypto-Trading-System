@@ -43,6 +43,15 @@ class SignalAggregator:
         self._fg_extreme_bonus: int = config.get("fear_greed_extreme_bonus", 15)
         self._fg_extreme_low: int = config.get("fear_greed_extreme_low", 15)
         self._fg_extreme_high: int = config.get("fear_greed_extreme_high", 85)
+        # Rule 3 (GCR): Schelling Point round number bonus
+        self._round_number_bonus: int = config.get("round_number_bonus", 10)
+        self._round_number_tolerance_pct: float = config.get(
+            "round_number_tolerance_pct", 0.5
+        )
+        # Rule 6 (Nison): Three candle confirmation
+        self._min_confirmation_candles: int = config.get(
+            "min_confirmation_candles", 3
+        )
 
         log_with_data(logger, "info", "SignalAggregator initialized", {
             "num_strategies": len(strategies),
@@ -133,7 +142,7 @@ class SignalAggregator:
 
         return result
 
-    def apply_bonuses(self, aggregated: dict[str, Any], timeframe_alignment: dict[str, Any], sentiment: dict[str, Any], fear_greed: int) -> dict[str, Any]:
+    def apply_bonuses(self, aggregated: dict[str, Any], timeframe_alignment: dict[str, Any], sentiment: dict[str, Any], fear_greed: int, current_price: float = 0.0, recent_candles: list[dict] | None = None) -> dict[str, Any]:
         bonus_breakdown: dict[str, int] = {}
         total_bonus: int = 0
         direction = aggregated["direction"]
@@ -157,6 +166,19 @@ class SignalAggregator:
         elif fear_greed > self._fg_extreme_high and direction == SignalDirection.SHORT.value:
             bonus_breakdown["fear_greed_extreme"] = self._fg_extreme_bonus
             total_bonus += self._fg_extreme_bonus
+
+        # Rule 3 (GCR): Schelling Point — bonus near round numbers
+        if current_price > 0 and self._is_near_round_number(current_price):
+            bonus_breakdown["schelling_point"] = self._round_number_bonus
+            total_bonus += self._round_number_bonus
+
+        # Rule 6 (Nison): Three candle confirmation penalty
+        if recent_candles and not self._check_candle_confirmation(
+            recent_candles, direction
+        ):
+            penalty = 15
+            bonus_breakdown["candle_confirmation_missing"] = -penalty
+            total_bonus -= penalty
 
         original_score = aggregated["weighted_score"]
         if direction == SignalDirection.SHORT.value:
@@ -254,6 +276,82 @@ class SignalAggregator:
         })
 
         return result
+
+    # ------------------------------------------------------------------
+    # Rule 3: Schelling Point detection (GCR)
+    # ------------------------------------------------------------------
+
+    def _is_near_round_number(self, price: float) -> bool:
+        """Check if price is near a psychologically significant round number.
+
+        Round numbers act as magnetic price levels (e.g., $10,000, $1.00,
+        $100). Trades near these levels get a bonus because the market
+        tends to gravitate toward them.
+
+        Args:
+            price: Current asset price.
+
+        Returns:
+            True if price is within tolerance of a round number.
+        """
+        if price <= 0:
+            return False
+
+        # Determine the appropriate round number magnitude
+        if price >= 10000:
+            round_levels = [10000, 5000]
+        elif price >= 1000:
+            round_levels = [1000, 500]
+        elif price >= 100:
+            round_levels = [100, 50]
+        elif price >= 10:
+            round_levels = [10, 5]
+        elif price >= 1:
+            round_levels = [1, 0.5]
+        else:
+            round_levels = [0.1, 0.01]
+
+        tolerance = self._round_number_tolerance_pct / 100.0
+        for level in round_levels:
+            nearest = round(price / level) * level
+            if nearest > 0 and abs(price - nearest) / nearest <= tolerance:
+                return True
+        return False
+
+    # ------------------------------------------------------------------
+    # Rule 6: Three candle confirmation (Nison)
+    # ------------------------------------------------------------------
+
+    def _check_candle_confirmation(
+        self, recent_candles: list[dict], direction: str
+    ) -> bool:
+        """Verify that the last N candles confirm the trade direction.
+
+        Entry is only confirmed when ``min_confirmation_candles`` (default 3)
+        consecutive candles confirm the new trend direction.
+
+        Args:
+            recent_candles: List of recent candle dicts with 'open' and 'close'.
+            direction: ``"long"`` or ``"short"``.
+
+        Returns:
+            True if candles confirm the direction.
+        """
+        n = self._min_confirmation_candles
+        if len(recent_candles) < n:
+            return False
+
+        last_n = recent_candles[-n:]
+
+        if direction == SignalDirection.LONG.value:
+            return all(
+                c.get("close", 0) > c.get("open", 0) for c in last_n
+            )
+        elif direction == SignalDirection.SHORT.value:
+            return all(
+                c.get("close", 0) < c.get("open", 0) for c in last_n
+            )
+        return False
 
     def _empty_aggregation(self, symbol: str) -> dict[str, Any]:
         return {
