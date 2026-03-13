@@ -6,7 +6,7 @@
 system:
   name: "APEX Crypto Trading System"
   version: "1.0.0"
-  mode: "paper"          # "paper" or "live" — START WITH PAPER
+  mode: "live"           # "paper" or "live"
   log_level: "INFO"      # DEBUG / INFO / WARNING / ERROR
   timezone: "UTC"
 
@@ -14,7 +14,7 @@ exchange:
   name: "mexc"
   spot_enabled: true
   futures_enabled: true
-  testnet: true           # Set to false for live trading
+  testnet: false          # Live trading on MEXC
   rate_limit_ms: 50       # Milliseconds between API calls
   max_retries: 5
   retry_backoff_base: 2.0
@@ -36,9 +36,9 @@ timeframes:
 
 data:
   history_years: 5
-  timescaledb_url: "postgresql://apex:apex_password@timescaledb:5432/apex_db"
+  timescaledb_url: "postgresql://apex:apex_password@localhost:5432/apex_db"
   sqlite_path: "./data/trades.db"
-  redis_url: "redis://redis:6379/0"
+  redis_url: "redis://localhost:6379/0"
   alt_data_refresh_minutes: 15
   fear_greed_url: "https://api.alternative.me/fng/"
   cryptopanic_api_key: "${CRYPTOPANIC_API_KEY}"

@@ -8,12 +8,13 @@ knives.
 
 from __future__ import annotations
 
+import math
 from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
 
-from apex_crypto.core.logging import get_logger
+from apex_crypto.core.logging import get_logger, log_with_data
 from apex_crypto.core.strategies.base import (
     BaseStrategy,
     SignalDirection,
@@ -527,6 +528,368 @@ class MeanReversionStrategy(BaseStrategy):
         Returns:
             The float value, or ``None`` if unavailable or NaN.
         """
+        if column not in df.columns:
+            return None
+        idx = -(1 + offset)
+        if abs(idx) > len(df):
+            return None
+        val = df[column].iloc[idx]
+        if pd.isna(val):
+            return None
+        return float(val)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# SIMONS UPGRADE: Statistical Mean Reversion with Kalman Filter
+# ══════════════════════════════════════════════════════════════════════
+
+
+class StatisticalMeanReversion(BaseStrategy):
+    """Statistical mean reversion using Kalman Filter dynamic mean estimation.
+
+    Combines Ornstein-Uhlenbeck half-life validation with ADX trending
+    market filtering and z-score based entry/exit signals.
+
+    Features:
+    - Kalman Filter for adaptive mean estimation
+    - OU half-life validation (only trade when mean reversion is statistically likely)
+    - ADX < 30 filter to avoid trending markets
+    - Z-score based entry (>2.0) and exit (<0.5)
+
+    Attributes:
+        name: Strategy identifier.
+        active_regimes: Only active in RANGING markets.
+    """
+
+    name: str = "stat_mean_reversion"
+    active_regimes: list[str] = ["RANGING"]
+    primary_timeframe: str = "1h"
+    confirmation_timeframe: str = "4h"
+    entry_timeframe: str = "15m"
+
+    # ------------------------------------------------------------------
+    # Configuration
+    # ------------------------------------------------------------------
+    _DEFAULT_ZSCORE_ENTRY: float = 2.0
+    _DEFAULT_ZSCORE_EXIT: float = 0.5
+    _DEFAULT_ZSCORE_STOP: float = 3.5
+    _DEFAULT_ADX_MAX: float = 30.0
+    _DEFAULT_KALMAN_Q: float = 0.001    # process noise
+    _DEFAULT_KALMAN_R: float = 0.1      # measurement noise
+    _DEFAULT_MIN_HALFLIFE: float = 2.0  # hours
+    _DEFAULT_MAX_HALFLIFE: float = 72.0 # hours
+    _DEFAULT_LOOKBACK: int = 480        # 20 days in hours
+    _DEFAULT_BASE_SCORE: int = 60
+
+    def __init__(self, config: dict) -> None:
+        super().__init__(config)
+        self.zscore_entry: float = config.get("zscore_entry", self._DEFAULT_ZSCORE_ENTRY)
+        self.zscore_exit: float = config.get("zscore_exit", self._DEFAULT_ZSCORE_EXIT)
+        self.zscore_stop: float = config.get("zscore_stop", self._DEFAULT_ZSCORE_STOP)
+        self.adx_max: float = config.get("adx_max", self._DEFAULT_ADX_MAX)
+        self.kalman_q: float = config.get("kalman_q", self._DEFAULT_KALMAN_Q)
+        self.kalman_r: float = config.get("kalman_r", self._DEFAULT_KALMAN_R)
+        self.min_halflife: float = config.get("min_halflife", self._DEFAULT_MIN_HALFLIFE)
+        self.max_halflife: float = config.get("max_halflife", self._DEFAULT_MAX_HALFLIFE)
+        self.lookback: int = config.get("lookback", self._DEFAULT_LOOKBACK)
+        self.base_score: int = config.get("base_score", self._DEFAULT_BASE_SCORE)
+
+        # Kalman state per symbol
+        self._kalman_state: dict[str, dict[str, float]] = {}
+
+        log_with_data(logger, "info", "StatisticalMeanReversion initialized", {
+            "zscore_entry": self.zscore_entry,
+            "adx_max": self.adx_max,
+            "kalman_q": self.kalman_q,
+        })
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def generate_signal(
+        self,
+        symbol: str,
+        data: dict[str, pd.DataFrame],
+        indicators: dict[str, pd.DataFrame],
+        regime: str,
+        alt_data: Optional[dict] = None,
+    ) -> TradeSignal:
+        """Generate a statistical mean-reversion signal."""
+        if not self.is_active(regime):
+            return self._neutral_signal(symbol)
+
+        if self.primary_timeframe not in data or self.primary_timeframe not in indicators:
+            return self._neutral_signal(symbol)
+
+        primary_data = data[self.primary_timeframe]
+        primary_ind = indicators[self.primary_timeframe]
+
+        if primary_data.empty or len(primary_data) < self.lookback:
+            return self._neutral_signal(symbol)
+
+        # ADX filter: reject if market is trending
+        adx = self._safe_last(primary_ind, "adx")
+        if adx is not None and adx > self.adx_max:
+            logger.debug("ADX filter: market trending", extra={
+                "symbol": symbol, "adx": round(adx, 1),
+            })
+            return self._neutral_signal(symbol)
+
+        close = primary_data["close"].iloc[-self.lookback:]
+
+        # Kalman Filter mean estimation
+        kalman_mean = self._kalman_filter(symbol, close)
+
+        # Compute z-score
+        residuals = close.values - kalman_mean
+        residual_std = np.std(residuals)
+        if residual_std <= 0:
+            return self._neutral_signal(symbol)
+
+        current_zscore = residuals[-1] / residual_std
+
+        # OU half-life validation
+        halflife = self._ou_halflife(residuals)
+        if halflife is None:
+            return self._neutral_signal(symbol)
+
+        if halflife < self.min_halflife or halflife > self.max_halflife:
+            logger.debug("OU half-life out of range", extra={
+                "symbol": symbol, "halflife": round(halflife, 2),
+            })
+            return self._neutral_signal(symbol)
+
+        # Z-score based signal generation
+        abs_z = abs(current_zscore)
+
+        # Stop condition
+        if abs_z > self.zscore_stop:
+            return self._neutral_signal(symbol)
+
+        # Exit condition
+        if abs_z < self.zscore_exit:
+            return self._neutral_signal(symbol)
+
+        # Entry condition
+        if abs_z < self.zscore_entry:
+            return self._neutral_signal(symbol)
+
+        # Positive z-score = price above mean → short (expect reversion down)
+        # Negative z-score = price below mean → long (expect reversion up)
+        if current_zscore > self.zscore_entry:
+            direction = SignalDirection.SHORT
+        elif current_zscore < -self.zscore_entry:
+            direction = SignalDirection.LONG
+        else:
+            return self._neutral_signal(symbol)
+
+        # Score
+        score = self._compute_score(current_zscore, halflife, adx)
+
+        # Build signal
+        entry_tf = self.entry_timeframe if self.entry_timeframe in data else self.primary_timeframe
+        entry_data = data[entry_tf]
+
+        return self._build_signal(
+            symbol, direction, score, entry_data, primary_data, primary_ind,
+            {
+                "zscore": round(current_zscore, 4),
+                "kalman_mean": round(kalman_mean[-1], 2),
+                "halflife": round(halflife, 2),
+                "adx": round(adx, 1) if adx is not None else None,
+            },
+        )
+
+    # ------------------------------------------------------------------
+    # Kalman Filter
+    # ------------------------------------------------------------------
+
+    def _kalman_filter(self, symbol: str, close: pd.Series) -> np.ndarray:
+        """Apply 1-D Kalman filter to estimate dynamic mean.
+
+        State: x_t (estimated mean price)
+        Measurement: z_t = close_t
+
+        Returns:
+            Array of Kalman-filtered mean estimates.
+        """
+        prices = close.values
+        n = len(prices)
+        filtered = np.zeros(n)
+
+        # Initialize or retrieve state
+        state = self._kalman_state.get(symbol, {
+            "x": prices[0],
+            "P": 1.0,
+        })
+
+        x = state["x"]
+        P = state["P"]
+        Q = self.kalman_q
+        R = self.kalman_r
+
+        for i in range(n):
+            # Predict
+            x_pred = x
+            P_pred = P + Q
+
+            # Update
+            K = P_pred / (P_pred + R)
+            x = x_pred + K * (prices[i] - x_pred)
+            P = (1 - K) * P_pred
+
+            filtered[i] = x
+
+        # Save state
+        self._kalman_state[symbol] = {"x": x, "P": P}
+
+        return filtered
+
+    # ------------------------------------------------------------------
+    # Ornstein-Uhlenbeck half-life
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _ou_halflife(residuals: np.ndarray) -> Optional[float]:
+        """Estimate OU half-life from residuals.
+
+        Fits: delta_r = a + b * r_lag
+        Half-life = -ln(2) / b
+        """
+        if len(residuals) < 10:
+            return None
+
+        lag = residuals[:-1]
+        delta = np.diff(residuals)
+
+        X = np.column_stack([np.ones(len(lag)), lag])
+        try:
+            beta = np.linalg.lstsq(X, delta, rcond=None)[0]
+        except np.linalg.LinAlgError:
+            return None
+
+        b = beta[1]
+        if b >= 0:
+            return None
+
+        halflife = -math.log(2) / b
+        return float(halflife)
+
+    # ------------------------------------------------------------------
+    # Scoring
+    # ------------------------------------------------------------------
+
+    def _compute_score(
+        self,
+        zscore: float,
+        halflife: float,
+        adx: Optional[float],
+    ) -> int:
+        """Compute conviction score."""
+        score = self.base_score
+
+        # Z-score magnitude bonus
+        abs_z = abs(zscore)
+        if abs_z > 3.0:
+            score += 20
+        elif abs_z > 2.5:
+            score += 10
+
+        # Good half-life bonus (faster mean reversion = better)
+        if halflife < 12.0:
+            score += 10
+        elif halflife < 24.0:
+            score += 5
+
+        # Low ADX bonus (very flat market = ideal for MR)
+        if adx is not None and adx < 20.0:
+            score += 5
+
+        return int(np.clip(score, 0, 100))
+
+    # ------------------------------------------------------------------
+    # Signal construction
+    # ------------------------------------------------------------------
+
+    def _build_signal(
+        self,
+        symbol: str,
+        direction: SignalDirection,
+        score: int,
+        entry_data: pd.DataFrame,
+        primary_data: pd.DataFrame,
+        primary_ind: pd.DataFrame,
+        extras: dict[str, Any],
+    ) -> TradeSignal:
+        """Build a TradeSignal for statistical mean reversion."""
+        entry_price = float(entry_data["close"].iloc[-1])
+        atr = self._safe_last(primary_ind, "atr")
+        atr_val = float(atr) if atr is not None else entry_price * 0.01
+
+        if direction == SignalDirection.LONG:
+            swing_level = float(primary_data["low"].rolling(10).min().iloc[-1])
+        else:
+            swing_level = float(primary_data["high"].rolling(10).max().iloc[-1])
+
+        stop_loss = self.compute_stop_loss(
+            entry_price, direction, atr_val, swing_level=swing_level,
+        )
+
+        # Mean-reversion targets based on Kalman mean
+        kalman_mean = extras.get("kalman_mean", entry_price)
+        risk = abs(entry_price - stop_loss)
+
+        if direction == SignalDirection.LONG:
+            tp1 = kalman_mean if kalman_mean > entry_price else entry_price + risk * 1.5
+            tp2 = entry_price + risk * 2.5
+            tp3 = entry_price + risk * 4.0
+        else:
+            tp1 = kalman_mean if kalman_mean < entry_price else entry_price - risk * 1.5
+            tp2 = entry_price - risk * 2.5
+            tp3 = entry_price - risk * 4.0
+
+        confidence = score / 100.0
+
+        signal = TradeSignal(
+            symbol=symbol,
+            direction=direction,
+            score=score if direction == SignalDirection.LONG else -score,
+            strategy=self.name,
+            timeframe=self.primary_timeframe,
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            take_profit_1=tp1,
+            take_profit_2=tp2,
+            take_profit_3=tp3,
+            confidence=confidence,
+            metadata={
+                "signal_type": "entry",
+                "regime_required": self.active_regimes,
+                **extras,
+            },
+        )
+
+        log_with_data(logger, "info", "Stat MR signal generated", {
+            "symbol": symbol,
+            "direction": direction.value,
+            "score": signal.score,
+            "zscore": extras.get("zscore"),
+            "halflife": extras.get("halflife"),
+        })
+
+        return signal
+
+    # ------------------------------------------------------------------
+    # Utilities
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _safe_last(
+        df: pd.DataFrame,
+        column: str,
+        offset: int = 0,
+    ) -> Optional[float]:
         if column not in df.columns:
             return None
         idx = -(1 + offset)

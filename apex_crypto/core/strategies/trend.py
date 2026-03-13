@@ -7,12 +7,13 @@ trend-following trades in strongly trending regimes.
 
 from __future__ import annotations
 
+import math
 from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
 
-from apex_crypto.core.logging import get_logger
+from apex_crypto.core.logging import get_logger, log_with_data
 from apex_crypto.core.strategies.base import (
     BaseStrategy,
     SignalDirection,
@@ -628,3 +629,360 @@ class TrendMomentumStrategy(BaseStrategy):
         if pd.isna(rolling_std) or rolling_std == 0:
             return None
         return float((vol.iloc[-1] - rolling_mean) / rolling_std)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# SIMONS UPGRADE: Multi-Timeframe Trend Following with tanh scoring
+# ══════════════════════════════════════════════════════════════════════
+
+
+class SimonsTrendFollowing(BaseStrategy):
+    """Simons-inspired trend following with multi-timeframe tanh scoring.
+
+    Features:
+    - Multi-timeframe tanh-normalized trend scoring (1h: 0.2, 4h: 0.3, 1d: 0.5)
+    - Regime detection (ADX > 20, price vs EMA-200, vol percentile filter)
+    - Adaptive EMA lookback periods
+
+    Attributes:
+        name: Strategy identifier.
+        active_regimes: Active in trending regimes.
+    """
+
+    name: str = "simons_trend"
+    active_regimes: list[str] = ["STRONG_BULL", "BULL", "BEAR", "STRONG_BEAR"]
+    primary_timeframe: str = "4h"
+    confirmation_timeframe: str = "1d"
+    entry_timeframe: str = "1h"
+
+    # Timeframe weights for composite score
+    _TF_WEIGHTS: dict[str, float] = {
+        "1h": 0.20,
+        "4h": 0.30,
+        "1d": 0.50,
+    }
+
+    # ------------------------------------------------------------------
+    # Configuration
+    # ------------------------------------------------------------------
+    _DEFAULT_ADX_MIN: float = 20.0
+    _DEFAULT_EMA_FAST: int = 21
+    _DEFAULT_EMA_SLOW: int = 55
+    _DEFAULT_EMA_TREND: int = 200
+    _DEFAULT_TANH_SCALE: float = 3.0   # scaling factor for tanh normalization
+    _DEFAULT_MIN_VOL_PCT: float = 0.15
+    _DEFAULT_MAX_VOL_PCT: float = 0.90
+    _DEFAULT_MIN_COMPOSITE: float = 0.25  # minimum composite score to trade
+    _DEFAULT_BASE_SCORE: int = 50
+
+    def __init__(self, config: dict) -> None:
+        super().__init__(config)
+        self.adx_min: float = config.get("adx_min", self._DEFAULT_ADX_MIN)
+        self.ema_fast: int = config.get("ema_fast", self._DEFAULT_EMA_FAST)
+        self.ema_slow: int = config.get("ema_slow", self._DEFAULT_EMA_SLOW)
+        self.ema_trend: int = config.get("ema_trend", self._DEFAULT_EMA_TREND)
+        self.tanh_scale: float = config.get("tanh_scale", self._DEFAULT_TANH_SCALE)
+        self.min_vol_pct: float = config.get("min_vol_percentile", self._DEFAULT_MIN_VOL_PCT)
+        self.max_vol_pct: float = config.get("max_vol_percentile", self._DEFAULT_MAX_VOL_PCT)
+        self.min_composite: float = config.get("min_composite", self._DEFAULT_MIN_COMPOSITE)
+        self.base_score: int = config.get("base_score", self._DEFAULT_BASE_SCORE)
+
+        log_with_data(logger, "info", "SimonsTrendFollowing initialized", {
+            "adx_min": self.adx_min,
+            "ema_fast": self.ema_fast,
+            "ema_slow": self.ema_slow,
+            "tanh_scale": self.tanh_scale,
+        })
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def generate_signal(
+        self,
+        symbol: str,
+        data: dict[str, pd.DataFrame],
+        indicators: dict[str, pd.DataFrame],
+        regime: str,
+        alt_data: Optional[dict] = None,
+    ) -> TradeSignal:
+        """Generate a multi-timeframe trend signal."""
+        if not self.is_active(regime):
+            return self._neutral_signal(symbol)
+
+        # Compute per-timeframe trend scores
+        tf_scores: dict[str, float] = {}
+        for tf, weight in self._TF_WEIGHTS.items():
+            if tf not in data or tf not in indicators:
+                continue
+            score = self._timeframe_trend_score(data[tf], indicators[tf])
+            if score is not None:
+                tf_scores[tf] = score
+
+        if not tf_scores:
+            return self._neutral_signal(symbol)
+
+        # Weighted composite score
+        composite = 0.0
+        total_weight = 0.0
+        for tf, score in tf_scores.items():
+            w = self._TF_WEIGHTS.get(tf, 0.2)
+            composite += score * w
+            total_weight += w
+
+        if total_weight > 0:
+            composite /= total_weight
+
+        # Apply tanh normalization to [-1, 1]
+        composite = math.tanh(composite * self.tanh_scale)
+
+        # Check minimum threshold
+        if abs(composite) < self.min_composite:
+            return self._neutral_signal(symbol)
+
+        # Regime validation (ADX check)
+        primary_ind = indicators.get(self.primary_timeframe, pd.DataFrame())
+        adx = self._safe_last(primary_ind, "adx")
+        if adx is not None and adx < self.adx_min:
+            return self._neutral_signal(symbol)
+
+        # Volatility percentile filter
+        if self.primary_timeframe in data:
+            vol_pct = self._vol_percentile(data[self.primary_timeframe])
+            if vol_pct is not None:
+                if vol_pct < self.min_vol_pct or vol_pct > self.max_vol_pct:
+                    logger.debug("Vol percentile filter", extra={
+                        "symbol": symbol, "vol_pct": round(vol_pct, 2),
+                    })
+                    return self._neutral_signal(symbol)
+
+        # Direction from composite
+        if composite > 0:
+            direction = SignalDirection.LONG
+        else:
+            direction = SignalDirection.SHORT
+
+        # Compute score
+        score = self._compute_score(composite, tf_scores, adx)
+
+        # Build signal
+        entry_tf = self.entry_timeframe if self.entry_timeframe in data else self.primary_timeframe
+        entry_data = data[entry_tf]
+
+        return self._build_signal(
+            symbol, direction, score, entry_data, primary_ind,
+            {
+                "composite": round(composite, 4),
+                "tf_scores": {k: round(v, 4) for k, v in tf_scores.items()},
+                "adx": round(adx, 1) if adx is not None else None,
+            },
+        )
+
+    # ------------------------------------------------------------------
+    # Per-timeframe trend scoring
+    # ------------------------------------------------------------------
+
+    def _timeframe_trend_score(
+        self,
+        tf_data: pd.DataFrame,
+        tf_ind: pd.DataFrame,
+    ) -> Optional[float]:
+        """Compute a trend score for a single timeframe.
+
+        Score components:
+        1. EMA alignment: fast > slow > trend → +1, reverse → -1
+        2. Price position relative to EMA-200
+        3. MACD histogram direction
+
+        Returns:
+            Float score in roughly [-1, +1], or None.
+        """
+        if tf_data.empty or tf_ind.empty:
+            return None
+
+        score = 0.0
+
+        # EMA alignment
+        ema_fast = self._safe_last(tf_ind, f"ema_{self.ema_fast}")
+        ema_slow = self._safe_last(tf_ind, f"ema_{self.ema_slow}")
+        ema_trend = self._safe_last(tf_ind, f"ema_{self.ema_trend}")
+
+        # Fallback to common EMA columns
+        if ema_fast is None:
+            ema_fast = self._safe_last(tf_ind, "ema_21")
+        if ema_slow is None:
+            ema_slow = self._safe_last(tf_ind, "ema_50")
+        if ema_trend is None:
+            ema_trend = self._safe_last(tf_ind, "ema_200")
+
+        if ema_fast is not None and ema_slow is not None:
+            if ema_fast > ema_slow:
+                score += 0.3
+            elif ema_fast < ema_slow:
+                score -= 0.3
+
+        if ema_fast is not None and ema_trend is not None:
+            if ema_fast > ema_trend:
+                score += 0.2
+            elif ema_fast < ema_trend:
+                score -= 0.2
+
+        # Price relative to EMA-200
+        close = self._safe_last(tf_data, "close")
+        if close is not None and ema_trend is not None:
+            if close > ema_trend:
+                score += 0.2
+            else:
+                score -= 0.2
+
+        # MACD direction
+        macd_hist = self._safe_last(tf_ind, "macd_histogram")
+        macd_hist_prev = self._safe_last(tf_ind, "macd_histogram", offset=1)
+        if macd_hist is not None and macd_hist_prev is not None:
+            if macd_hist > macd_hist_prev:
+                score += 0.15
+            elif macd_hist < macd_hist_prev:
+                score -= 0.15
+
+        # RSI position
+        rsi = self._safe_last(tf_ind, "rsi_14")
+        if rsi is not None:
+            if rsi > 60:
+                score += 0.15
+            elif rsi < 40:
+                score -= 0.15
+
+        return score
+
+    # ------------------------------------------------------------------
+    # Volatility percentile
+    # ------------------------------------------------------------------
+
+    def _vol_percentile(self, tf_data: pd.DataFrame) -> Optional[float]:
+        """Compute current volatility percentile."""
+        if "close" not in tf_data.columns or len(tf_data) < 100:
+            return None
+
+        log_returns = np.log(tf_data["close"] / tf_data["close"].shift(1)).dropna()
+        if len(log_returns) < 100:
+            return None
+
+        window = 20
+        current_vol = log_returns.iloc[-window:].std()
+        rolling_vol = log_returns.rolling(window).std().dropna()
+        return float((rolling_vol < current_vol).mean())
+
+    # ------------------------------------------------------------------
+    # Scoring
+    # ------------------------------------------------------------------
+
+    def _compute_score(
+        self,
+        composite: float,
+        tf_scores: dict[str, float],
+        adx: Optional[float],
+    ) -> int:
+        """Compute conviction score."""
+        score = self.base_score
+
+        # Composite magnitude bonus
+        abs_comp = abs(composite)
+        if abs_comp > 0.7:
+            score += 20
+        elif abs_comp > 0.5:
+            score += 10
+
+        # Multi-TF agreement bonus
+        all_positive = all(v > 0 for v in tf_scores.values())
+        all_negative = all(v < 0 for v in tf_scores.values())
+        if (all_positive or all_negative) and len(tf_scores) >= 2:
+            score += 15
+
+        # ADX strength bonus
+        if adx is not None and adx > 35:
+            score += 10
+        elif adx is not None and adx > 25:
+            score += 5
+
+        return int(np.clip(score, 0, 100))
+
+    # ------------------------------------------------------------------
+    # Signal construction
+    # ------------------------------------------------------------------
+
+    def _build_signal(
+        self,
+        symbol: str,
+        direction: SignalDirection,
+        score: int,
+        entry_data: pd.DataFrame,
+        primary_ind: pd.DataFrame,
+        extras: dict[str, Any],
+    ) -> TradeSignal:
+        """Build a TradeSignal for Simons trend following."""
+        entry_price = float(entry_data["close"].iloc[-1])
+        atr = self._safe_last(primary_ind, "atr")
+        atr_val = float(atr) if atr is not None else entry_price * 0.015
+
+        if direction == SignalDirection.LONG:
+            swing_level = float(entry_data["low"].rolling(20).min().iloc[-1])
+        else:
+            swing_level = float(entry_data["high"].rolling(20).max().iloc[-1])
+
+        stop_loss = self.compute_stop_loss(
+            entry_price, direction, atr_val, swing_level=swing_level,
+            atr_multiplier=1.5,
+        )
+        tp1, tp2, tp3 = self.compute_take_profits(
+            entry_price, stop_loss, direction,
+            tp1_r=1.5, tp2_r=2.5, tp3_r=4.0,
+        )
+        confidence = score / 100.0
+
+        signal = TradeSignal(
+            symbol=symbol,
+            direction=direction,
+            score=score if direction == SignalDirection.LONG else -score,
+            strategy=self.name,
+            timeframe=self.primary_timeframe,
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            take_profit_1=tp1,
+            take_profit_2=tp2,
+            take_profit_3=tp3,
+            confidence=confidence,
+            metadata={
+                "signal_type": "entry",
+                "regime_required": self.active_regimes,
+                **extras,
+            },
+        )
+
+        log_with_data(logger, "info", "Simons trend signal generated", {
+            "symbol": symbol,
+            "direction": direction.value,
+            "score": signal.score,
+            "composite": extras.get("composite"),
+        })
+
+        return signal
+
+    # ------------------------------------------------------------------
+    # Utilities
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _safe_last(
+        df: pd.DataFrame,
+        column: str,
+        offset: int = 0,
+    ) -> Optional[float]:
+        if column not in df.columns:
+            return None
+        idx = -(1 + offset)
+        if abs(idx) > len(df):
+            return None
+        val = df[column].iloc[idx]
+        if pd.isna(val):
+            return None
+        return float(val)
