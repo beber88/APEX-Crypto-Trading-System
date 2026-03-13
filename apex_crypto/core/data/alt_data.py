@@ -242,12 +242,12 @@ class AlternativeDataManager:
                 # Persist to TimescaleDB
                 try:
                     await self.storage.timescaledb_insert(
-                        table="sentiment_scores",
+                        table="sentiment",
                         record={
                             "source": "fear_greed_index",
-                            "symbol": None,
+                            "symbol": "MARKET",
                             "score": result["value"],
-                            "classification": result["classification"],
+                            "raw_data": json.dumps({"classification": result["classification"]}),
                             "timestamp": result["timestamp"],
                         },
                     )

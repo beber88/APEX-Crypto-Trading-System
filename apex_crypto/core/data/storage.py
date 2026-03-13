@@ -106,6 +106,13 @@ CREATE TABLE IF NOT EXISTS regime (
     confidence  DOUBLE PRECISION NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS open_interest (
+    symbol      TEXT            NOT NULL,
+    timestamp   TIMESTAMPTZ     NOT NULL,
+    oi_value    DOUBLE PRECISION NOT NULL,
+    PRIMARY KEY (symbol, timestamp)
+);
+
 CREATE TABLE IF NOT EXISTS equity_snapshots (
     id                  BIGSERIAL PRIMARY KEY,
     timestamp           TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
@@ -136,6 +143,8 @@ CREATE INDEX IF NOT EXISTS idx_sentiment_sym_ts
     ON sentiment (symbol, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_regime_sym_ts
     ON regime (symbol, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_open_interest_sym_ts
+    ON open_interest (symbol, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_equity_ts
     ON equity_snapshots (timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_signals_sym_ts

@@ -33,9 +33,9 @@ assets:
   min_price: 0.001
 
 timeframes:
-  scalping: ["1m", "3m"]
+  scalping: ["1m"]
   intraday: ["5m", "15m", "30m"]
-  swing: ["1h", "2h", "4h"]
+  swing: ["1h", "4h"]
   macro: ["1d", "1w"]
   regime_classification: ["4h", "1d"]
 
