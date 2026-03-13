@@ -75,7 +75,7 @@ class MEXCBroker:
         })
 
         if testnet:
-            self._exchange.set_sandbox_mode(True)
+            log_with_data(logger, "warning", "MEXC does not support sandbox mode in ccxt; skipping set_sandbox_mode. Paper trading is handled internally.")
 
         # Paper trading bookkeeping
         self._paper_orders: dict[str, dict[str, Any]] = {}

@@ -125,8 +125,8 @@ class MarketDataManager:
         )
 
         if exchange_cfg.get("testnet", False):
-            self._exchange.set_sandbox_mode(True)
-            _structured_log(logging.INFO, "exchange_sandbox_enabled")
+            _structured_log(logging.WARNING, "mexc_sandbox_not_supported",
+                            msg="MEXC does not support sandbox mode in ccxt; skipping")
 
         _structured_log(
             logging.INFO,

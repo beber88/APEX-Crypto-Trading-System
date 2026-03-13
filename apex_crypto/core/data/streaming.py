@@ -189,7 +189,7 @@ class MarketStreamManager:
             }
         )
         if self._config.get("sandbox", False):
-            exchange.set_sandbox_mode(True)
+            logger.warning("MEXC does not support sandbox mode in ccxt; skipping set_sandbox_mode")
         return exchange
 
     # ------------------------------------------------------------------
