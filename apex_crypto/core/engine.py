@@ -468,8 +468,12 @@ class TradingEngine:
             funding_rates = await self._alt_data_manager.fetch_funding_rates([symbol])
             fg = await self._alt_data_manager.fetch_fear_greed_index()
 
+            # funding_rates keys use futures format (e.g. "BTC/USDT:USDT")
+            futures_symbol = f"{symbol}:USDT" if ":USDT" not in symbol and "/USDT" in symbol else symbol
+            rate = funding_rates.get(futures_symbol, funding_rates.get(symbol, 0.0))
+
             return {
-                "funding_rate": funding_rates.get(symbol, 0.0),
+                "funding_rate": rate,
                 "fear_greed": fg.get("value", 50) if isinstance(fg, dict) else 50,
             }
         except Exception:

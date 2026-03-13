@@ -47,7 +47,7 @@ class AlternativeDataManager:
     _FEAR_GREED_URL: str = "https://api.alternative.me/fng/"
     _CRYPTOPANIC_URL: str = "https://cryptopanic.com/api/v1/posts/"
 
-    def __init__(self, config: dict, storage: StorageManager) -> None:
+    def __init__(self, config: dict, storage: Optional[StorageManager]) -> None:
         """Initializes the AlternativeDataManager.
 
         Args:
@@ -57,10 +57,10 @@ class AlternativeDataManager:
                 - finbert_device (optional): Torch device string, e.g. "cpu"
                   or "cuda:0". Defaults to "cpu".
             storage: StorageManager instance providing Redis cache and
-                TimescaleDB access.
+                TimescaleDB access, or None if unavailable.
         """
         self.config: dict = config
-        self.storage: StorageManager = storage
+        self.storage: Optional[StorageManager] = storage
 
         self._finbert_pipeline: Any | None = None
         self._mexc_exchange: ccxt.mexc | None = None
@@ -178,6 +178,8 @@ class AlternativeDataManager:
         cache_key = "alt:fear_greed_index"
 
         try:
+            if self.storage is None:
+                raise RuntimeError("Storage not available")
             cached = await self.storage.redis_get(cache_key)
             if cached is not None:
                 data = json.loads(cached)
@@ -216,47 +218,48 @@ class AlternativeDataManager:
             }
 
             # Cache in Redis
-            serializable = {
-                **result,
-                "timestamp": result["timestamp"].isoformat(),
-            }
-            try:
-                await self.storage.redis_set(
-                    cache_key,
-                    json.dumps(serializable),
-                    ttl=self._FEAR_GREED_CACHE_TTL,
-                )
-            except Exception as exc:
-                logger.warning(
-                    json.dumps(
-                        {
-                            "event": "fear_greed_cache_write_error",
-                            "error": str(exc),
-                        }
+            if self.storage is not None:
+                serializable = {
+                    **result,
+                    "timestamp": result["timestamp"].isoformat(),
+                }
+                try:
+                    await self.storage.redis_set(
+                        cache_key,
+                        json.dumps(serializable),
+                        ttl=self._FEAR_GREED_CACHE_TTL,
                     )
-                )
+                except Exception as exc:
+                    logger.warning(
+                        json.dumps(
+                            {
+                                "event": "fear_greed_cache_write_error",
+                                "error": str(exc),
+                            }
+                        )
+                    )
 
-            # Persist to TimescaleDB
-            try:
-                await self.storage.timescaledb_insert(
-                    table="sentiment_scores",
-                    record={
-                        "source": "fear_greed_index",
-                        "symbol": None,
-                        "score": result["value"],
-                        "classification": result["classification"],
-                        "timestamp": result["timestamp"],
-                    },
-                )
-            except Exception as exc:
-                logger.warning(
-                    json.dumps(
-                        {
-                            "event": "fear_greed_db_write_error",
-                            "error": str(exc),
-                        }
+                # Persist to TimescaleDB
+                try:
+                    await self.storage.timescaledb_insert(
+                        table="sentiment_scores",
+                        record={
+                            "source": "fear_greed_index",
+                            "symbol": None,
+                            "score": result["value"],
+                            "classification": result["classification"],
+                            "timestamp": result["timestamp"],
+                        },
                     )
-                )
+                except Exception as exc:
+                    logger.warning(
+                        json.dumps(
+                            {
+                                "event": "fear_greed_db_write_error",
+                                "error": str(exc),
+                            }
+                        )
+                    )
 
             logger.info(
                 json.dumps(
@@ -520,31 +523,44 @@ class AlternativeDataManager:
             await exchange.load_markets()
 
             for symbol in [self._to_futures_symbol(s) for s in symbols]:
+                # Skip symbols that don't exist as futures contracts
+                if symbol not in exchange.markets:
+                    logger.debug(
+                        json.dumps(
+                            {
+                                "event": "funding_rate_skip_no_contract",
+                                "symbol": symbol,
+                            }
+                        )
+                    )
+                    continue
+
                 try:
                     funding = await exchange.fetch_funding_rate(symbol)
                     rate: float = float(funding.get("fundingRate", 0.0))
                     rates[symbol] = rate
 
                     # Persist to TimescaleDB
-                    try:
-                        await self.storage.timescaledb_insert(
-                            table="funding_rates",
-                            record={
-                                "symbol": symbol,
-                                "rate": rate,
-                                "timestamp": datetime.now(tz=timezone.utc),
-                            },
-                        )
-                    except Exception as db_exc:
-                        logger.warning(
-                            json.dumps(
-                                {
-                                    "event": "funding_rate_db_write_error",
+                    if self.storage is not None:
+                        try:
+                            await self.storage.timescaledb_insert(
+                                table="funding_rates",
+                                record={
                                     "symbol": symbol,
-                                    "error": str(db_exc),
-                                }
+                                    "rate": rate,
+                                    "timestamp": datetime.now(tz=timezone.utc),
+                                },
                             )
-                        )
+                        except Exception as db_exc:
+                            logger.warning(
+                                json.dumps(
+                                    {
+                                        "event": "funding_rate_db_write_error",
+                                        "symbol": symbol,
+                                        "error": str(db_exc),
+                                    }
+                                )
+                            )
 
                 except Exception as exc:
                     logger.warning(
@@ -601,6 +617,9 @@ class AlternativeDataManager:
             The mean funding rate over the period, or 0.0 if no data is
             available.
         """
+        if self.storage is None:
+            return 0.0
+
         try:
             query = (
                 "SELECT AVG(rate) AS avg_rate "
@@ -676,6 +695,10 @@ class AlternativeDataManager:
             await exchange.load_markets()
 
             for symbol in [self._to_futures_symbol(s) for s in symbols]:
+                # Skip symbols that don't exist as futures contracts
+                if symbol not in exchange.markets:
+                    continue
+
                 try:
                     oi = await exchange.fetch_open_interest(symbol)
                     oi_value: float = float(
@@ -684,26 +707,27 @@ class AlternativeDataManager:
 
                     # Try to compute 24h change from stored data
                     oi_change_pct: float = 0.0
-                    try:
-                        query = (
-                            "SELECT oi_value "
-                            "FROM open_interest "
-                            "WHERE symbol = $1 "
-                            "  AND timestamp >= NOW() - INTERVAL '24 hours' "
-                            "ORDER BY timestamp ASC "
-                            "LIMIT 1"
-                        )
-                        rows = await self.storage.timescaledb_query(
-                            query=query, params=[symbol]
-                        )
-                        if rows and rows[0].get("oi_value"):
-                            old_oi = float(rows[0]["oi_value"])
-                            if old_oi > 0:
-                                oi_change_pct = (
-                                    (oi_value - old_oi) / old_oi
-                                ) * 100.0
-                    except Exception:
-                        pass  # Gracefully degrade; use 0.0
+                    if self.storage is not None:
+                        try:
+                            query = (
+                                "SELECT oi_value "
+                                "FROM open_interest "
+                                "WHERE symbol = $1 "
+                                "  AND timestamp >= NOW() - INTERVAL '24 hours' "
+                                "ORDER BY timestamp ASC "
+                                "LIMIT 1"
+                            )
+                            rows = await self.storage.timescaledb_query(
+                                query=query, params=[symbol]
+                            )
+                            if rows and rows[0].get("oi_value"):
+                                old_oi = float(rows[0]["oi_value"])
+                                if old_oi > 0:
+                                    oi_change_pct = (
+                                        (oi_value - old_oi) / old_oi
+                                    ) * 100.0
+                        except Exception:
+                            pass  # Gracefully degrade; use 0.0
 
                     oi_data[symbol] = {
                         "oi_value": oi_value,
@@ -711,25 +735,26 @@ class AlternativeDataManager:
                     }
 
                     # Persist to TimescaleDB
-                    try:
-                        await self.storage.timescaledb_insert(
-                            table="open_interest",
-                            record={
-                                "symbol": symbol,
-                                "oi_value": oi_value,
-                                "timestamp": datetime.now(tz=timezone.utc),
-                            },
-                        )
-                    except Exception as db_exc:
-                        logger.warning(
-                            json.dumps(
-                                {
-                                    "event": "open_interest_db_write_error",
+                    if self.storage is not None:
+                        try:
+                            await self.storage.timescaledb_insert(
+                                table="open_interest",
+                                record={
                                     "symbol": symbol,
-                                    "error": str(db_exc),
-                                }
+                                    "oi_value": oi_value,
+                                    "timestamp": datetime.now(tz=timezone.utc),
+                                },
                             )
-                        )
+                        except Exception as db_exc:
+                            logger.warning(
+                                json.dumps(
+                                    {
+                                        "event": "open_interest_db_write_error",
+                                        "symbol": symbol,
+                                        "error": str(db_exc),
+                                    }
+                                )
+                            )
 
                 except Exception as exc:
                     logger.warning(
