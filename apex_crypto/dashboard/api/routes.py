@@ -71,8 +71,14 @@ ws_manager = WebSocketManager()
 # ---------------------------------------------------------------------------
 _security = HTTPBasic(auto_error=False)
 
-_DASHBOARD_USER: str = os.environ.get("DASHBOARD_USER", "admin")
-_DASHBOARD_PASSWORD: str = os.environ.get("DASHBOARD_PASSWORD", "changeme")
+def _get_dashboard_user() -> str:
+    """Return the configured dashboard username (read at call time)."""
+    return os.environ.get("DASHBOARD_USER", "admin")
+
+
+def _get_dashboard_password() -> str:
+    """Return the configured dashboard password (read at call time)."""
+    return os.environ.get("DASHBOARD_PASSWORD", "apex_dashboard_2024")
 
 
 async def _verify_credentials(
@@ -104,13 +110,16 @@ async def _verify_credentials(
             headers={"WWW-Authenticate": "Basic"},
         )
 
+    expected_user = _get_dashboard_user()
+    expected_password = _get_dashboard_password()
+
     username_ok = secrets.compare_digest(
         credentials.username.encode("utf-8"),
-        _DASHBOARD_USER.encode("utf-8"),
+        expected_user.encode("utf-8"),
     )
     password_ok = secrets.compare_digest(
         credentials.password.encode("utf-8"),
-        _DASHBOARD_PASSWORD.encode("utf-8"),
+        expected_password.encode("utf-8"),
     )
 
     if not (username_ok and password_ok):
@@ -815,7 +824,7 @@ async def on_startup() -> None:
         {
             "version": _VERSION,
             "cors_origins": _cors_origins(),
-            "auth_user": _DASHBOARD_USER,
+            "auth_user": _get_dashboard_user(),
             "ws_broadcast_interval": _WS_BROADCAST_INTERVAL,
         },
     )
