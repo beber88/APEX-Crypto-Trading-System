@@ -91,6 +91,9 @@ class TradingEngine:
         self._last_trade_won: bool = True
         self._market_vol_percentile: float = 50.0
 
+        # Ultra mode
+        self._ultra_mode: bool = full_config.get("ultra_mode", {}).get("enabled", False)
+
         # BTC price history for kill switch (Rule 30)
         self._btc_price_history: list[tuple[float, float]] = []  # (timestamp, price)
 
@@ -164,9 +167,15 @@ class TradingEngine:
         # 6c. Compounding engine (anti-martingale + drawdown-adjusted sizing)
         try:
             from apex_crypto.core.risk.compounding import CompoundingEngine
-            self._compounding_engine = CompoundingEngine(
-                self._full_config.get("compounding", {})
-            )
+            comp_cfg = dict(self._full_config.get("compounding", {}))
+            comp_cfg["ultra_mode"] = self._ultra_mode
+            if self._ultra_mode:
+                # Ultra defaults: faster rebalance, no profit lock, growth^0.7
+                comp_cfg.setdefault("compound_frequency", 5)
+                comp_cfg.setdefault("rebalance_every_hours", 3)
+                comp_cfg.setdefault("profit_lock_fraction", 0.0)
+                comp_cfg.setdefault("growth_exponent", 0.7)
+            self._compounding_engine = CompoundingEngine(comp_cfg)
         except Exception as exc:
             logger.warning("CompoundingEngine not available: %s", exc)
 
@@ -209,13 +218,16 @@ class TradingEngine:
         # 6h. Position sizing engine (Kelly + Anti-Martingale)
         try:
             from apex_crypto.core.risk.position_sizing import PositionSizingEngine
+            ps_cfg = self._full_config.get("position_sizing", {})
             ps_config = {
-                "base_risk_pct": self._full_config.get("risk", {}).get("risk_per_trade_pct", 1.0) / 100.0,
-                "max_risk_pct": 0.03,
-                "min_risk_pct": 0.005,
-                "kelly_fraction": 0.5,
-                "win_streak_boost": 0.10,
-                "loss_streak_cut": 0.10,
+                "base_risk_pct": ps_cfg.get("base_risk_pct",
+                    self._full_config.get("risk", {}).get("risk_per_trade_pct", 1.0) / 100.0),
+                "max_risk_pct": ps_cfg.get("max_risk_pct", 0.08),
+                "min_risk_pct": ps_cfg.get("min_risk_pct", 0.003),
+                "kelly_fraction": ps_cfg.get("kelly_fraction", 0.8),
+                "win_streak_boost": ps_cfg.get("win_streak_boost", 0.20),
+                "loss_streak_cut": ps_cfg.get("loss_streak_cut", 0.15),
+                "ultra_mode": self._ultra_mode,
             }
             self._position_sizing_engine = PositionSizingEngine(ps_config)
         except Exception as exc:
@@ -224,10 +236,21 @@ class TradingEngine:
         # 6i. Exposure controller (adaptive leverage & regime-based sizing)
         try:
             from apex_crypto.core.risk.exposure import ExposureController
+            exp_cfg = self._full_config.get("exposure", {})
             exposure_config = {
-                "max_positions_base": self._full_config.get("risk", {}).get("max_open_positions", 8),
-                "max_positions_aggressive": 15,
-                "max_portfolio_leverage": self._full_config.get("risk", {}).get("max_leverage", 3.0),
+                "max_positions_base": exp_cfg.get("max_positions_base",
+                    self._full_config.get("risk", {}).get("max_open_positions", 12)),
+                "max_positions_aggressive": exp_cfg.get("max_positions_aggressive", 15),
+                "max_positions_ultra": exp_cfg.get("max_positions_ultra", 25),
+                "max_portfolio_leverage": exp_cfg.get("max_portfolio_leverage",
+                    self._full_config.get("risk", {}).get("max_leverage", 3.0)),
+                "max_portfolio_leverage_ultra": exp_cfg.get("max_portfolio_leverage_ultra", 8.0),
+                "ultra_mode": self._ultra_mode,
+                "ultra_max_drawdown_pct": exp_cfg.get("ultra_max_drawdown_pct", 8.0),
+                "ultra_min_volume_24h": exp_cfg.get("ultra_min_volume_24h", 5_000_000),
+                "ultra_max_spread_pct": exp_cfg.get("ultra_max_spread_pct", 0.08),
+                "ultra_min_signal_score": exp_cfg.get("ultra_min_signal_score", 50),
+                **{k: v for k, v in exp_cfg.items() if k.startswith("regime_") or k.startswith("ultra_regime_")},
             }
             self._exposure_controller = ExposureController(exposure_config)
         except Exception as exc:
@@ -451,6 +474,28 @@ class TradingEngine:
                           "KILL SWITCH ACTIVE — closing all positions")
             await self._emergency_close_all()
             return
+
+        # Ultra mode safety checks (tighter drawdown limit)
+        if self._ultra_mode and self._exposure_controller:
+            try:
+                ultra_safety = self._exposure_controller.check_ultra_safeties(
+                    self._equity_stats.get("current_drawdown_pct", 0.0),
+                    len(self._open_positions),
+                )
+                if ultra_safety.get("emergency_close"):
+                    log_with_data(logger, "critical", ultra_safety["reason"])
+                    await self._emergency_close_all()
+                    if ultra_safety.get("disable_ultra"):
+                        self._ultra_mode = False
+                        self._exposure_controller.set_ultra_mode(False)
+                        if self._position_sizing_engine:
+                            self._position_sizing_engine.ultra_mode = False
+                    return
+                if ultra_safety.get("pause_trading"):
+                    log_with_data(logger, "warning", ultra_safety["reason"])
+                    return
+            except Exception as exc:
+                logger.debug("Ultra safety check error: %s", exc)
 
         # Check if trading should be paused
         should_pause, pause_reason = self._decision_engine.should_pause_trading(
@@ -851,7 +896,9 @@ class TradingEngine:
                         recent_win_streak=db_stats["recent_win_streak"],
                         recent_loss_streak=db_stats["recent_loss_streak"],
                     )
-                    kelly_risk = self._position_sizing_engine.get_risk_pct(stats)
+                    kelly_risk = self._position_sizing_engine.get_risk_pct(
+                        stats, atr_percentile=self._market_vol_percentile
+                    )
                     # Convert fraction to percentage for downstream code
                     base_risk_pct = kelly_risk * 100.0
                     logger.info("Kelly+AM risk for %s: %.2f%% (WR=%.1f%%, streak W%d/L%d)",
@@ -1198,6 +1245,7 @@ class TradingEngine:
         """Return current engine state for the dashboard."""
         state = {
             "running": self._running,
+            "ultra_mode": self._ultra_mode,
             "cycle_count": self._cycle_count,
             "last_cycle_time_ms": round(self._last_cycle_time * 1000, 1),
             "open_positions": list(self._open_positions),

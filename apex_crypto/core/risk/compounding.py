@@ -74,6 +74,10 @@ class CompoundingEngine:
         self.profit_lock_fraction: float = config.get("profit_lock_fraction", 0.10)
         self.rebalance_every_hours: int = config.get("rebalance_every_hours", 6)
 
+        # Ultra mode: faster compounding, no profit locking, growth^0.7
+        self.ultra_mode: bool = config.get("ultra_mode", False)
+        self.growth_exponent: float = config.get("growth_exponent", 0.5)
+
         # Internal state
         self._consecutive_wins: int = 0
         self._consecutive_losses: int = 0
@@ -440,9 +444,10 @@ class CompoundingEngine:
         """Lock a fraction of profits when equity grows past a threshold.
 
         When equity grows by ``profit_lock_step`` (default 20%) above the
-        last locked level, ``profit_lock_fraction`` (default 10%) of the
-        current equity is "locked" — effectively reducing the tradable
-        equity so that position sizes don't scale infinitely.
+        last locked level, ``profit_lock_fraction`` of the current equity
+        is "locked" — reducing the tradable equity.
+
+        In ultra mode with profit_lock_fraction=0, all equity stays in play.
 
         Args:
             current_equity: Current total portfolio equity.
@@ -450,6 +455,13 @@ class CompoundingEngine:
         Returns:
             Effective equity available for trading (after locking).
         """
+        # Ultra mode with zero lock fraction: all equity available
+        if self.profit_lock_fraction <= 0:
+            if self._start_equity is None:
+                self._start_equity = current_equity
+                self._last_locked_equity = current_equity
+            return current_equity
+
         if self._start_equity is None:
             self._start_equity = current_equity
             self._last_locked_equity = current_equity
@@ -515,8 +527,9 @@ class CompoundingEngine:
     def on_rebalance(self, equity: float, now_ts: float) -> None:
         """Execute a rebalance event: recalibrate risk to current equity.
 
-        Scales base_risk_pct proportionally to equity growth (sqrt scaling
-        for conservatism).
+        Scales base_risk_pct proportionally to equity growth.
+        Normal mode: growth^0.5 (sqrt scaling, conservative).
+        Ultra mode: growth^0.7 (aggressive — equity doubles -> risk grows 62%).
 
         Args:
             equity: Current tradable equity.
@@ -524,10 +537,10 @@ class CompoundingEngine:
         """
         if self._start_equity and self._start_equity > 0:
             growth_factor = equity / self._start_equity
-            # Sqrt scaling: if equity doubles, risk grows by ~41%
+            exponent = self.growth_exponent
             new_base_risk = min(
                 self.anti_martingale_ceiling,
-                self.base_risk_pct * (growth_factor ** 0.5),
+                self.base_risk_pct * (growth_factor ** exponent),
             )
             old_base = self.base_risk_pct
             self.base_risk_pct = new_base_risk

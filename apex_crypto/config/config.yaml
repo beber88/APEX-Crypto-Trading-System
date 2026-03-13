@@ -194,24 +194,40 @@ compounding:
   vol_high_multiplier: 0.5
   compound_frequency: 10
   equity_snapshot_interval_seconds: 3600
-  profit_lock_step: 0.20            # Lock profits every 20% equity growth
-  profit_lock_fraction: 0.10         # Lock 10% of current equity
-  rebalance_every_hours: 6           # Time-based rebalance trigger
+  profit_lock_step: 0.15            # Lock profits every 15% equity growth
+  profit_lock_fraction: 0.0          # ULTRA: 0% lock — all equity stays in play
+  rebalance_every_hours: 3           # ULTRA: rebalance every 3h (was 6)
+  growth_exponent: 0.7               # ULTRA: growth^0.7 (was 0.5)
+
+# Ultra Mode — master switch for aggressive trading
+ultra_mode:
+  enabled: true                      # PAPER TESTING — set false for conservative
+  # Ultra mode overrides (applied when enabled: true):
+  # - Position sizing: 80% Kelly, 8% max risk, +20% win boost
+  # - Exposure: up to 25 positions, 8x leverage in bull
+  # - Compounding: rebalance every 5 trades / 3h, no profit lock
+  # - Safety: 8% drawdown kills ultra mode (vs 12% normal)
 
 # Position sizing (Kelly + Anti-Martingale)
 position_sizing:
-  base_risk_pct: 0.01               # 1% base risk (as fraction)
-  max_risk_pct: 0.03                # 3% maximum
-  min_risk_pct: 0.005               # 0.5% minimum
-  kelly_fraction: 0.5               # Half-Kelly (conservative)
-  win_streak_boost: 0.10            # +10% risk per consecutive win
-  loss_streak_cut: 0.10             # -10% risk per consecutive loss
+  base_risk_pct: 0.015              # ULTRA: 1.5% base risk (was 1%)
+  max_risk_pct: 0.08                # ULTRA: 8% maximum (was 3%)
+  min_risk_pct: 0.003               # 0.3% minimum
+  kelly_fraction: 0.8               # ULTRA: 80% Kelly (was 50%)
+  win_streak_boost: 0.20            # ULTRA: +20% per win (was 10%)
+  loss_streak_cut: 0.15             # ULTRA: -15% per loss (was 10%)
 
 # Exposure controller (adaptive leverage & regime-based sizing)
 exposure:
   max_positions_base: 12
   max_positions_aggressive: 15
+  max_positions_ultra: 25            # ULTRA: up to 25 simultaneous positions
   max_portfolio_leverage: 3.0
+  max_portfolio_leverage_ultra: 8.0  # ULTRA: up to 8x leverage
+  ultra_max_drawdown_pct: 8.0        # ULTRA: kill switch at 8% DD (tighter)
+  ultra_min_volume_24h: 5000000      # $5M min volume for ultra eligibility
+  ultra_max_spread_pct: 0.08         # 0.08% max spread
+  ultra_min_signal_score: 50         # Lower threshold in ultra (was 60)
   regime_multipliers:
     STRONG_BULL: 1.5
     WEAK_BULL: 1.2
