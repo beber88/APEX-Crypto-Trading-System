@@ -14,7 +14,7 @@ exchange:
   name: "mexc"
   spot_enabled: true
   futures_enabled: true
-  testnet: false          # Live trading on MEXC
+  testnet: true           # Paper mode — set false only for live
   rate_limit_ms: 50       # Milliseconds between API calls
   max_retries: 5
   retry_backoff_base: 2.0
@@ -36,7 +36,7 @@ timeframes:
 
 data:
   history_years: 5
-  timescaledb_url: "postgresql://apex:apex_password@localhost:5432/apex_db"
+  timescaledb_url: "postgresql://apex:${POSTGRES_PASSWORD}@localhost:5432/apex_db"
   sqlite_path: "./data/trades.db"
   redis_url: "redis://localhost:6379/0"
   alt_data_refresh_minutes: 15
