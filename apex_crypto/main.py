@@ -28,6 +28,7 @@ class ApexTradingSystem:
         self._config = None
         self._tasks: list[asyncio.Task] = []
         self._engine = None
+        self._telegram_bot = None
 
     async def initialize(self) -> None:
         """Initialize all system components."""
@@ -54,6 +55,22 @@ class ApexTradingSystem:
         engine_cfg = self._config._data.get("engine", {})
         self._engine = TradingEngine(engine_cfg, self._config._data)
         await self._engine.setup()
+
+        # Initialize Telegram bot if enabled
+        telegram_cfg = self._config._data.get("telegram", {})
+        if telegram_cfg.get("enabled", False):
+            try:
+                from apex_crypto.telegram.bot import ApexTelegramBot
+                self._telegram_bot = ApexTelegramBot(config=telegram_cfg)
+                self._telegram_bot.set_system(
+                    get_portfolio_stats=self._get_portfolio_stats,
+                    get_open_positions=self._get_open_positions,
+                    get_regimes=self._get_regimes,
+                )
+                logger.info("Telegram bot initialized")
+            except Exception as exc:
+                logger.warning("Telegram bot not available: %s", exc)
+                self._telegram_bot = None
 
         logger.info("All components initialized successfully")
 
@@ -85,6 +102,14 @@ class ApexTradingSystem:
             name="dashboard",
         )
         self._tasks.append(dashboard_task)
+
+        # Start Telegram bot
+        if self._telegram_bot:
+            try:
+                await self._telegram_bot.start()
+                logger.info("Telegram bot started")
+            except Exception as exc:
+                logger.warning("Telegram bot start failed: %s", exc)
 
         logger.info("=" * 60)
         logger.info("  APEX CRYPTO TRADING SYSTEM — RUNNING")
@@ -126,6 +151,12 @@ class ApexTradingSystem:
         logger.info("Stopping APEX Crypto Trading System")
         self._running = False
 
+        if self._telegram_bot:
+            try:
+                await self._telegram_bot.stop()
+            except Exception:
+                pass
+
         if self._engine:
             await self._engine.stop()
 
@@ -136,6 +167,39 @@ class ApexTradingSystem:
             await asyncio.gather(*self._tasks, return_exceptions=True)
 
         logger.info("System stopped gracefully")
+
+    # ------------------------------------------------------------------
+    # Telegram callback methods
+    # ------------------------------------------------------------------
+
+    def _get_portfolio_stats(self) -> dict:
+        """Return portfolio stats for Telegram /status command."""
+        if not self._engine:
+            return {}
+        state = self._engine.get_state()
+        mode = self._config.get("system.mode", "paper") if self._config else "unknown"
+        return {
+            "total_equity": state.get("equity_stats", {}).get("current_equity", 0.0),
+            "daily_pnl": state.get("daily_stats", {}).get("daily_pnl_pct", 0.0) * 100,
+            "daily_pnl_pct": state.get("daily_stats", {}).get("daily_pnl_pct", 0.0),
+            "open_positions_count": len(state.get("open_positions", [])),
+            "current_drawdown_pct": state.get("equity_stats", {}).get("current_drawdown_pct", 0.0),
+            "mode": mode,
+        }
+
+    def _get_open_positions(self) -> list:
+        """Return open positions for Telegram /positions command."""
+        if not self._engine:
+            return []
+        state = self._engine.get_state()
+        return state.get("open_positions", [])
+
+    def _get_regimes(self) -> dict:
+        """Return current regimes for Telegram /regime command."""
+        if not self._engine:
+            return {}
+        state = self._engine.get_state()
+        return state.get("current_regimes", {})
 
     @staticmethod
     def _load_env(path: Path) -> None:

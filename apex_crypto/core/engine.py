@@ -136,17 +136,27 @@ class TradingEngine:
         from apex_crypto.core.signals.decision import TradeDecisionEngine
         self._decision_engine = TradeDecisionEngine(self._full_config)
 
-        # 7. Alt data manager (optional — may fail without API keys)
+        # 7. Storage manager (optional — may fail without DB connections)
+        try:
+            from apex_crypto.core.data.storage import StorageManager
+            data_cfg = self._full_config.get("data", {})
+            self._storage = StorageManager(data_cfg)
+            log_with_data(logger, "info", "StorageManager initialized")
+        except Exception as exc:
+            logger.warning("StorageManager not available: %s", exc)
+            self._storage = None
+
+        # 8. Alt data manager (optional — may fail without API keys)
         try:
             from apex_crypto.core.data.alt_data import AlternativeDataManager
             self._alt_data_manager = AlternativeDataManager(
-                self._full_config.get("data", {}), None
+                self._full_config.get("data", {}), self._storage
             )
         except Exception as exc:
             logger.warning("Alt data manager not available: %s", exc)
             self._alt_data_manager = None
 
-        # 8. Try to get initial balance (timeout after 10s to avoid blocking startup)
+        # 9. Try to get initial balance (timeout after 10s to avoid blocking startup)
         try:
             balance = await asyncio.wait_for(
                 self._broker.get_balance(), timeout=10.0
@@ -261,6 +271,11 @@ class TradingEngine:
         if self._alt_data_manager:
             try:
                 await self._alt_data_manager.close()
+            except Exception:
+                pass
+        if self._storage:
+            try:
+                self._storage.close()
             except Exception:
                 pass
 

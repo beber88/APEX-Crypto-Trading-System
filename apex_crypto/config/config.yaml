@@ -14,6 +14,7 @@ exchange:
   name: "mexc"
   spot_enabled: true
   futures_enabled: true
+  default_type: "spot"    # Use spot API (symbols are in spot format)
   testnet: true           # Paper mode — set false only for live
   rate_limit_ms: 50       # Milliseconds between API calls
   max_retries: 5
@@ -36,9 +37,9 @@ timeframes:
 
 data:
   history_years: 5
-  timescaledb_url: "postgresql://apex:${POSTGRES_PASSWORD}@localhost:5432/apex_db"
+  timescaledb_url: "postgresql://apex:${POSTGRES_PASSWORD}@timescaledb:5432/apex_db"
   sqlite_path: "./data/trades.db"
-  redis_url: "redis://localhost:6379/0"
+  redis_url: "redis://redis:6379/0"
   alt_data_refresh_minutes: 15
   fear_greed_url: "https://api.alternative.me/fng/"
   cryptopanic_api_key: "${CRYPTOPANIC_API_KEY}"
