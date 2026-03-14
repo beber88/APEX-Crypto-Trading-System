@@ -144,9 +144,11 @@ class PositionTracker:
             "entry_time": now,
             "status": "open",
             "stop_loss": trade_data.get("sl_price"),
-            "take_profit": trade_data.get("tp_prices", [None])[0] if isinstance(
-                trade_data.get("tp_prices"), list
-            ) else trade_data.get("tp_prices"),
+            "take_profit": (
+                trade_data["tp_prices"][0]
+                if isinstance(trade_data.get("tp_prices"), list) and trade_data["tp_prices"]
+                else trade_data.get("tp_prices")
+            ),
             "timeframe": trade_data.get("timeframe"),
             "metadata": {
                 "signal_score": trade_data.get("signal_score"),

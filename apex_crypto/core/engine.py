@@ -241,6 +241,7 @@ class TradingEngine:
                         "open_positions": len(self._open_positions),
                         "equity": self._equity_stats.get("current_equity", 0),
                     })
+                    await self._reconcile_positions()
 
                 # Wait for next cycle
                 elapsed = time.time() - cycle_start
@@ -769,6 +770,38 @@ class TradingEngine:
                 )
         except Exception:
             pass
+
+    # ------------------------------------------------------------------
+    # Position reconciliation
+    # ------------------------------------------------------------------
+
+    async def _reconcile_positions(self) -> None:
+        """Reconcile internal position tracker with exchange state.
+
+        Removes local positions that no longer exist on the exchange.
+        Runs periodically (every 10 cycles) to catch missed fills or
+        manual closures.
+        """
+        if not self._broker or self._broker._paper_trading:
+            return
+        if not self._open_positions:
+            return
+
+        try:
+            for position in list(self._open_positions):
+                symbol = position.get("symbol", "")
+                if not symbol:
+                    continue
+                exchange_pos = await self._broker.get_position(symbol)
+                if exchange_pos["amount"] == 0.0:
+                    log_with_data(logger, "warning", "Position exists locally but not on exchange", {
+                        "symbol": symbol,
+                    })
+                    self._open_positions = [
+                        p for p in self._open_positions if p["symbol"] != symbol
+                    ]
+        except Exception as exc:
+            logger.warning("Position reconciliation failed: %s", exc)
 
     # ------------------------------------------------------------------
     # State accessors (for dashboard)
