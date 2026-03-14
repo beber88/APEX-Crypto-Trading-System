@@ -74,6 +74,7 @@ class TradingEngine:
         self._storage = None
 
         # Runtime state
+        self._pending_entries: set[str] = set()  # symbols with pending entry orders
         self._open_positions: list[dict[str, Any]] = []
         self._daily_stats: dict[str, Any] = {
             "trades_today": 0,
@@ -254,8 +255,27 @@ class TradingEngine:
         log_with_data(logger, "info", "Trading engine stopped")
 
     async def stop(self) -> None:
-        """Gracefully stop the engine."""
+        """Gracefully stop the engine, cancelling all open orders first."""
         self._running = False
+
+        # Cancel all open orders for tracked positions
+        if self._broker and self._open_positions:
+            log_with_data(logger, "info", "Cancelling open orders before shutdown", {
+                "positions": len(self._open_positions),
+            })
+            for position in self._open_positions:
+                symbol = position.get("symbol", "")
+                if not symbol:
+                    continue
+                try:
+                    cancelled = await self._broker.cancel_all_orders(symbol)
+                    log_with_data(logger, "info", "Orders cancelled for shutdown", {
+                        "symbol": symbol,
+                        "cancelled_count": len(cancelled),
+                    })
+                except Exception as exc:
+                    logger.warning("Failed to cancel orders for %s on shutdown: %s", symbol, exc)
+
         if self._broker:
             await self._broker.close()
         if self._alt_data_manager:
@@ -324,6 +344,15 @@ class TradingEngine:
         self, symbols: list[str], timeframes: list[str]
     ) -> None:
         """Execute one full trading cycle across all symbols."""
+
+        # Check data staleness — skip trading if data is too old
+        data_age = time.time() - self._last_data_refresh
+        if self._last_data_refresh > 0 and data_age > self._data_refresh_interval * 2:
+            log_with_data(logger, "warning", "Market data is stale, skipping cycle", {
+                "data_age_seconds": round(data_age),
+                "max_age_seconds": self._data_refresh_interval * 2,
+            })
+            return
 
         # Check if trading should be paused
         should_pause, pause_reason = self._decision_engine.should_pause_trading(
@@ -594,9 +623,14 @@ class TradingEngine:
         if direction == "neutral":
             return
 
-        # Already in position?
+        # Already in position or pending entry?
         position_symbols = {p.get("symbol") for p in self._open_positions}
         if symbol in position_symbols:
+            return
+        if symbol in self._pending_entries:
+            log_with_data(logger, "debug", "Skipping duplicate entry", {
+                "symbol": symbol,
+            })
             return
 
         # Run decision engine
@@ -662,6 +696,7 @@ class TradingEngine:
         if not entry_signal["take_profit"]:
             entry_signal.pop("take_profit")
 
+        self._pending_entries.add(symbol)
         try:
             trade_record = await self._broker.execute_entry(entry_signal)
 
@@ -700,6 +735,8 @@ class TradingEngine:
 
         except Exception as exc:
             logger.error("Trade execution failed for %s: %s", symbol, exc)
+        finally:
+            self._pending_entries.discard(symbol)
 
     async def _get_current_price(self, symbol: str) -> float:
         """Get the latest price for a symbol."""
@@ -736,6 +773,15 @@ class TradingEngine:
 
     def get_state(self) -> dict[str, Any]:
         """Return current engine state for the dashboard."""
+        data_age = time.time() - self._last_data_refresh if self._last_data_refresh > 0 else -1
+
+        is_paused = False
+        pause_reason = ""
+        if self._decision_engine:
+            is_paused, pause_reason = self._decision_engine.should_pause_trading(
+                self._daily_stats, self._equity_stats,
+            )
+
         return {
             "running": self._running,
             "cycle_count": self._cycle_count,
@@ -746,4 +792,7 @@ class TradingEngine:
             "current_signals": list(self._current_signals),
             "current_regimes": dict(self._current_regimes),
             "strategies_loaded": len(self._strategies),
+            "data_age_seconds": round(data_age, 1),
+            "is_trading_paused": is_paused,
+            "pause_reason": pause_reason,
         }

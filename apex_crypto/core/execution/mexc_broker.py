@@ -102,6 +102,71 @@ class MEXCBroker:
         log_with_data(logger, "info", "MEXCBroker connection closed")
 
     # ------------------------------------------------------------------
+    # Pre-order safety checks
+    # ------------------------------------------------------------------
+
+    async def _validate_balance(
+        self, side: str, amount: float, price: float
+    ) -> None:
+        """Check that account has sufficient balance before placing an order.
+
+        Only runs for live (non-paper) buy orders. Raises
+        ``ccxt.InsufficientFunds`` if the estimated cost exceeds available
+        balance.
+        """
+        if self._paper_trading or side != "buy":
+            return
+
+        estimated_cost = amount * price
+        try:
+            balance = await self.get_balance()
+            free = balance.get("free_usdt", 0.0)
+            if free < estimated_cost:
+                raise ccxt.InsufficientFunds(
+                    f"Pre-order check: need {estimated_cost:.2f} USDT "
+                    f"but only {free:.2f} USDT available"
+                )
+        except ccxt.InsufficientFunds:
+            raise
+        except Exception as exc:
+            log_with_data(logger, "warning", "Balance check failed, proceeding", {
+                "error": str(exc),
+            })
+
+    async def _validate_price(
+        self, symbol: str, price: float
+    ) -> None:
+        """Reject orders where the price deviates too far from the market.
+
+        Compares the proposed order price against the last traded price
+        from the exchange ticker.  Raises ``ccxt.InvalidOrder`` if the
+        deviation exceeds 5 %.
+        """
+        if self._paper_trading or price <= 0:
+            return
+
+        max_deviation_pct = 5.0
+        try:
+            ticker = await self._exchange.fetch_ticker(symbol)
+            last_price = float(ticker.get("last", 0) or 0)
+            if last_price <= 0:
+                return
+
+            deviation_pct = abs(price - last_price) / last_price * 100
+            if deviation_pct > max_deviation_pct:
+                raise ccxt.InvalidOrder(
+                    f"Price sanity check: order price {price} deviates "
+                    f"{deviation_pct:.1f}% from market {last_price} "
+                    f"(max {max_deviation_pct}%)"
+                )
+        except ccxt.InvalidOrder:
+            raise
+        except Exception as exc:
+            log_with_data(logger, "warning", "Price validation failed, proceeding", {
+                "error": str(exc),
+            })
+
+    # ------------------------------------------------------------------
     # Order placement
     # ------------------------------------------------------------------
 
@@ -129,6 +194,9 @@ class MEXCBroker:
         """
         if self._paper_trading:
             return self._simulate_order(symbol, side, "limit", amount, price)
+
+        await self._validate_balance(side, amount, price)
+        await self._validate_price(symbol, price)
 
         raw = await self._retry(
             self._exchange.create_limit_order,
@@ -159,6 +227,18 @@ class MEXCBroker:
         """
         if self._paper_trading:
             return self._simulate_order(symbol, side, "market", amount)
+
+        # For market orders, use ticker price for balance estimation
+        if side == "buy":
+            try:
+                ticker = await self._exchange.fetch_ticker(symbol)
+                est_price = float(ticker.get("last", 0) or 0)
+                if est_price > 0:
+                    await self._validate_balance(side, amount, est_price)
+            except ccxt.InsufficientFunds:
+                raise
+            except Exception:
+                pass
 
         raw = await self._retry(
             self._exchange.create_market_order,
@@ -197,6 +277,9 @@ class MEXCBroker:
                 symbol, side, "stop_limit", amount,
                 price=limit_price, stop_price=stop_price,
             )
+
+        await self._validate_balance(side, amount, limit_price)
+        await self._validate_price(symbol, limit_price)
 
         params: dict[str, Any] = {
             "stopPrice": stop_price,
@@ -653,7 +736,9 @@ class MEXCBroker:
             "function": func.__name__,
             "error": str(last_exception),
         })
-        raise last_exception  # type: ignore[misc]
+        if last_exception is not None:
+            raise last_exception
+        raise RuntimeError(f"All {_MAX_RETRIES} retries exhausted for {func.__name__}")
 
     # ------------------------------------------------------------------
     # Normalisation
@@ -777,7 +862,13 @@ class MEXCBroker:
             order = self._paper_orders[oid]
             if order["symbol"] == symbol and order["price"] > 0:
                 return order["price"]
-        return 0.0
+        log_with_data(logger, "warning", "No price available for paper market order", {
+            "symbol": symbol,
+        })
+        raise ValueError(
+            f"Cannot estimate market price for {symbol} in paper mode: "
+            "no previous orders exist. Place a limit order first."
+        )
 
     def _paper_cancel(self, order_id: str) -> dict[str, Any]:
         """Cancel a paper trading order.

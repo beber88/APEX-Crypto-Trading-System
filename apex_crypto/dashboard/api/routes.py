@@ -643,6 +643,59 @@ async def resume_trading(
     return {"status": "resumed"}
 
 
+@app.get("/health")
+async def health_check() -> dict[str, Any]:
+    """Return system health status (no authentication required).
+
+    Returns:
+        Dictionary with ``status``, ``uptime_seconds``,
+        ``data_age_seconds``, ``open_positions_count``,
+        ``is_trading``, and ``daily_pnl_pct``.
+    """
+    store = _store(app)
+    uptime = time.time() - _system_start_time
+
+    if store is None:
+        return {
+            "status": "degraded",
+            "reason": "engine not connected",
+            "uptime_seconds": round(uptime, 1),
+        }
+
+    # Pull engine state for health assessment
+    engine = getattr(store, "_engine", None)
+    engine_state = engine.get_state() if engine else {}
+
+    data_age = engine_state.get("data_age_seconds", -1)
+    is_paused = engine_state.get("is_trading_paused", False)
+    daily_pnl = engine_state.get("daily_stats", {}).get("daily_pnl_pct", 0.0)
+    drawdown = engine_state.get("equity_stats", {}).get("current_drawdown_pct", 0.0)
+    positions_count = len(engine_state.get("open_positions", []))
+
+    # Determine health status
+    if not engine_state.get("running", False):
+        health_status = "unhealthy"
+    elif data_age > 600:  # data older than 10 minutes
+        health_status = "degraded"
+    elif is_paused:
+        health_status = "degraded"
+    else:
+        health_status = "healthy"
+
+    return {
+        "status": health_status,
+        "uptime_seconds": round(uptime, 1),
+        "cycle_count": engine_state.get("cycle_count", 0),
+        "last_cycle_time_ms": engine_state.get("last_cycle_time_ms", 0),
+        "data_age_seconds": data_age,
+        "open_positions_count": positions_count,
+        "strategies_loaded": engine_state.get("strategies_loaded", 0),
+        "is_trading": not is_paused and not _trading_paused,
+        "daily_pnl_pct": round(daily_pnl, 4),
+        "drawdown_pct": round(drawdown, 4),
+    }
+
+
 @app.get("/api/metrics", response_class=PlainTextResponse)
 async def get_metrics() -> str:
     """Return Prometheus-compatible metrics in text exposition format.
