@@ -41,7 +41,7 @@ class QuantMomentum(BaseStrategy):
     """
 
     name: str = "quant_momentum"
-    active_regimes: list[str] = ["STRONG_BULL", "BULL", "RANGING", "BEAR"]
+    active_regimes: list[str] = ["STRONG_BULL", "WEAK_BULL", "RANGING", "WEAK_BEAR"]
     primary_timeframe: str = "4h"
     confirmation_timeframe: str = "1d"
     entry_timeframe: str = "1h"

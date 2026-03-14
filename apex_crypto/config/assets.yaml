@@ -44,12 +44,6 @@ tier2:
     - symbol: "ADA/USDT"
       futures: "ADA/USDT:USDT"
       max_leverage: 2
-    - symbol: "ATOM/USDT"
-      futures: "ATOM/USDT:USDT"
-      max_leverage: 2
-    - symbol: "LTC/USDT"
-      futures: "LTC/USDT:USDT"
-      max_leverage: 2
 
 dynamic_watchlist:
   description: "Auto-refreshed top coins by 24h volume"

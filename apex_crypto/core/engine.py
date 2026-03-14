@@ -462,9 +462,13 @@ class TradingEngine:
         alt_data = await self._get_alt_data(symbol)
         active_count = 0
 
+        inactive_strategies = []
+        neutral_strategies = []
+
         for strategy in self._strategies:
             try:
                 if not strategy.is_active(regime):
+                    inactive_strategies.append(strategy.name)
                     continue
                 active_count += 1
                 signal = strategy.generate_signal(
@@ -473,9 +477,23 @@ class TradingEngine:
                 if signal.direction.value != "neutral" and signal.score != 0:
                     signals.append(signal)
                     self._current_signals.append(signal.to_dict())
+                else:
+                    neutral_strategies.append(strategy.name)
             except Exception as exc:
                 logger.warning("Strategy %s error on %s: %s",
                                strategy.name, symbol, exc)
+
+        # Log detailed signal info periodically
+        if self._cycle_count % 5 == 0 and (signals or active_count > 0):
+            log_with_data(logger, "info", "Symbol scan detail", {
+                "symbol": symbol,
+                "regime": regime,
+                "active_strategies": active_count,
+                "signals_generated": len(signals),
+                "neutral_strategies": neutral_strategies[:5],
+                "inactive_strategies": inactive_strategies[:5],
+                "signal_scores": {s.strategy: s.score for s in signals},
+            })
 
         if not signals:
             return None

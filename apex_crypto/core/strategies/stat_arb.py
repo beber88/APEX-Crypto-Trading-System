@@ -49,7 +49,7 @@ class PairsTrading(BaseStrategy):
     """
 
     name: str = "stat_arb"
-    active_regimes: list[str] = ["STRONG_BULL", "BULL", "RANGING", "BEAR", "STRONG_BEAR"]
+    active_regimes: list[str] = ["STRONG_BULL", "WEAK_BULL", "RANGING", "WEAK_BEAR", "STRONG_BEAR"]
     primary_timeframe: str = "1h"
     confirmation_timeframe: str = "4h"
     entry_timeframe: str = "15m"

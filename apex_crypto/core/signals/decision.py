@@ -630,15 +630,15 @@ class TradeDecisionEngine:
         Returns:
             ``True`` if the regime is considered unfavorable.
         """
-        regime_lower = regime.lower()
+        regime_upper = regime.upper()
 
-        unfavorable_long = {"bearish", "crash", "high_volatility_down", "distribution"}
-        unfavorable_short = {"bullish", "strong_uptrend", "low_volatility_up", "accumulation"}
+        unfavorable_long = {"STRONG_BEAR", "CHAOS"}
+        unfavorable_short = {"STRONG_BULL"}
 
         if direction == SignalDirection.LONG.value:
-            return regime_lower in unfavorable_long
+            return regime_upper in unfavorable_long
         if direction == SignalDirection.SHORT.value:
-            return regime_lower in unfavorable_short
+            return regime_upper in unfavorable_short
         return False
 
     @staticmethod
