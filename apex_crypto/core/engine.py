@@ -88,6 +88,7 @@ class TradingEngine:
             "current_equity": 0.0,
         }
         self._current_signals: list[dict] = []
+        self._current_signals_by_symbol: dict[str, list] = {}  # symbol → [TradeSignal]
         self._current_regimes: dict[str, dict] = {}
         self._ohlcv_cache: dict[str, dict[str, pd.DataFrame]] = {}
         self._last_cycle_time: float = 0.0
@@ -373,6 +374,7 @@ class TradingEngine:
         # Scan for new entry signals
         all_aggregated: list[dict[str, Any]] = []
         self._current_signals = []
+        self._current_signals_by_symbol = {}
 
         for symbol in symbols:
             try:
@@ -452,6 +454,9 @@ class TradingEngine:
         if not signals:
             return None
 
+        # Cache raw TradeSignal objects for exit reversal detection
+        self._current_signals_by_symbol[symbol] = list(signals)
+
         # Aggregate signals
         aggregated = self._aggregator.aggregate_signals(symbol, signals)
 
@@ -529,14 +534,12 @@ class TradingEngine:
                 # Get current price
                 current_price = await self._get_current_price(symbol)
                 if current_price <= 0:
+                    logger.debug("Skipping exit check for %s: price unavailable", symbol)
                     continue
                 position["current_price"] = current_price
 
                 # Get latest signals for this symbol
-                symbol_signals = [
-                    s for s in self._strategies
-                    if hasattr(s, '_last_signal') and s._last_signal
-                ]
+                symbol_signals = self._current_signals_by_symbol.get(symbol, [])
 
                 # Check exit conditions
                 indicator_state = {
@@ -545,7 +548,7 @@ class TradingEngine:
                 }
 
                 exit_decision = self._decision_engine.check_exit_conditions(
-                    position, indicator_state, []
+                    position, indicator_state, symbol_signals
                 )
 
                 action = exit_decision.get("action", "hold")
