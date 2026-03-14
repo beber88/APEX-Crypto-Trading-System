@@ -6,8 +6,8 @@
 system:
   name: "APEX Crypto Trading System"
   version: "1.0.0"
-  mode: "paper"           # "paper" or "live"
-  log_level: "DEBUG"     # DEBUG for paper testing (change to INFO for live)
+  mode: "live"            # "paper" or "live"
+  log_level: "INFO"      # INFO for live trading
   timezone: "UTC"
 
 engine:
@@ -19,7 +19,7 @@ exchange:
   spot_enabled: true
   futures_enabled: true
   default_type: "spot"    # Use spot API (symbols are in spot format)
-  testnet: true           # Paper mode — set false only for live
+  testnet: false           # Live trading mode
   rate_limit_ms: 50       # Milliseconds between API calls
   max_retries: 5
   retry_backoff_base: 2.0
