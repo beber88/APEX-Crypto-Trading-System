@@ -148,7 +148,18 @@ class TradingEngine:
             logger.warning("Alt data manager not available: %s", exc)
             self._alt_data_manager = None
 
-        # 8. Try to get initial balance (timeout after 10s to avoid blocking startup)
+        # 8. Pre-load exchange markets so OHLCV fetch doesn't fail later
+        try:
+            await asyncio.wait_for(
+                self._broker._exchange.load_markets(), timeout=30.0
+            )
+            log_with_data(logger, "info", "Exchange markets loaded", {
+                "num_markets": len(self._broker._exchange.markets),
+            })
+        except Exception as exc:
+            logger.warning("Failed to pre-load markets: %s — will retry on first fetch", exc)
+
+        # 9. Try to get initial balance (timeout after 10s to avoid blocking startup)
         try:
             balance = await asyncio.wait_for(
                 self._broker.get_balance(), timeout=10.0

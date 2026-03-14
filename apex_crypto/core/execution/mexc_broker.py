@@ -71,6 +71,7 @@ class MEXCBroker:
             "rateLimit": config.get("rate_limit_ms", 100),
             "options": {
                 "defaultType": exchange_cfg.get("default_type", "swap"),
+                "fetchCurrencies": False,  # Skip capital/config/getall (requires auth, often fails)
             },
         })
 
