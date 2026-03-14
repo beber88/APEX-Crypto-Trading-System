@@ -921,17 +921,20 @@ def _build_update_payload(store: Any = None) -> dict[str, Any]:
             else:
                 open_pnl += (entry - current) * amount
 
-    daily_pnl_pct = risk_metrics.get("daily_loss_pct", 0.0)
+    realized_pnl_pct = risk_metrics.get("daily_loss_pct", 0.0)
+    realized_pnl = realized_pnl_pct * current_equity / 100 if current_equity else 0
+    total_pnl = realized_pnl + open_pnl
+    total_pnl_pct = (total_pnl / current_equity * 100) if current_equity else 0.0
     drawdown_pct = ((peak_equity - current_equity) / peak_equity * 100) if peak_equity > 0 else 0.0
 
     return {
         "type": "update",
         "data": {
             "portfolio_value": current_equity,
-            "daily_pnl": daily_pnl_pct * current_equity / 100 if current_equity else 0,
-            "daily_pnl_pct": daily_pnl_pct,
+            "daily_pnl": round(total_pnl, 2),
+            "daily_pnl_pct": round(total_pnl_pct, 2),
             "open_pnl": round(open_pnl, 2),
-            "closed_pnl": round(daily_pnl_pct * current_equity / 100 - open_pnl, 2) if current_equity else 0,
+            "closed_pnl": round(realized_pnl, 2),
             "win_rate": getattr(store, "performance_30d", {}).get("win_rate_30d", 0.5),
             "equity": current_equity,
             "peak_equity": peak_equity,
