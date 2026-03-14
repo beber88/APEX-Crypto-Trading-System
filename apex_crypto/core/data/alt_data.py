@@ -151,7 +151,7 @@ class AlternativeDataManager:
                     "apiKey": mexc_config.get("apiKey", ""),
                     "secret": mexc_config.get("secret", ""),
                     "enableRateLimit": True,
-                    "options": {"defaultType": "swap"},
+                    "options": {"defaultType": "swap", "fetchCurrencies": False},
                 }
             )
         return self._mexc_exchange

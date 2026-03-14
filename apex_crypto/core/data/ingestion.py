@@ -120,7 +120,7 @@ class MarketDataManager:
                 "secret": secret_key,
                 "enableRateLimit": True,
                 "rateLimit": self._rate_limit_ms,
-                "options": {"defaultType": "spot"},
+                "options": {"defaultType": "spot", "fetchCurrencies": False},
             }
         )
 
