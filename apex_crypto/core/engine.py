@@ -235,11 +235,17 @@ class TradingEngine:
                 self._last_cycle_time = time.time() - cycle_start
 
                 if self._cycle_count % 10 == 0:
+                    symbols_with_data = sum(
+                        1 for v in self._ohlcv_cache.values() if v
+                    )
                     log_with_data(logger, "info", "Engine heartbeat", {
                         "cycle": self._cycle_count,
                         "cycle_time_ms": round(self._last_cycle_time * 1000),
                         "open_positions": len(self._open_positions),
                         "equity": self._equity_stats.get("current_equity", 0),
+                        "symbols_with_data": symbols_with_data,
+                        "strategies_loaded": len(self._strategies),
+                        "signals_this_cycle": len(self._current_signals),
                     })
                     await self._reconcile_positions()
 
@@ -312,8 +318,12 @@ class TradingEngine:
             await asyncio.sleep(0.2)
 
         self._last_data_refresh = time.time()
+        symbols_with_data = sum(
+            1 for v in self._ohlcv_cache.values() if v
+        )
         log_with_data(logger, "info", "Market data refreshed", {
             "cached_symbols": len(self._ohlcv_cache),
+            "symbols_with_data": symbols_with_data,
         })
 
     async def _fetch_ohlcv(
@@ -385,6 +395,19 @@ class TradingEngine:
             except Exception as exc:
                 logger.warning("Error scanning %s: %s", symbol, exc)
 
+        # Log scan summary every cycle
+        symbols_with_data = sum(
+            1 for s in symbols if self._ohlcv_cache.get(s)
+        )
+        if self._cycle_count % 5 == 0:
+            log_with_data(logger, "info", "Cycle scan summary", {
+                "symbols_scanned": len(symbols),
+                "symbols_with_data": symbols_with_data,
+                "signals_produced": len(self._current_signals),
+                "aggregated_opportunities": len(all_aggregated),
+                "active_strategies": len(self._strategies),
+            })
+
         # Rank opportunities and execute
         if all_aggregated:
             ranked = self._aggregator.rank_opportunities(all_aggregated)
@@ -437,11 +460,13 @@ class TradingEngine:
         # Generate signals from all active strategies
         signals = []
         alt_data = await self._get_alt_data(symbol)
+        active_count = 0
 
         for strategy in self._strategies:
             try:
                 if not strategy.is_active(regime):
                     continue
+                active_count += 1
                 signal = strategy.generate_signal(
                     symbol, data, indicators, regime, alt_data
                 )
@@ -449,8 +474,8 @@ class TradingEngine:
                     signals.append(signal)
                     self._current_signals.append(signal.to_dict())
             except Exception as exc:
-                logger.debug("Strategy %s error on %s: %s",
-                             strategy.name, symbol, exc)
+                logger.warning("Strategy %s error on %s: %s",
+                               strategy.name, symbol, exc)
 
         if not signals:
             return None
