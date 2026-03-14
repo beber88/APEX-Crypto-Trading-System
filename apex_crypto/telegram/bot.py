@@ -965,12 +965,16 @@ class ApexTelegramBot:
         equity = stats.get("total_equity", 0.0)
         daily_pnl = stats.get("daily_pnl", 0.0)
         daily_pnl_pct = stats.get("daily_pnl_pct", 0.0)
+        total_pnl = stats.get("total_pnl", 0.0)
+        total_pnl_pct = stats.get("total_pnl_pct", 0.0)
         positions_count = stats.get("open_positions_count", 0)
         drawdown = stats.get("current_drawdown_pct", 0.0)
         mode = stats.get("mode", "unknown")
 
         pnl_sign = "+" if daily_pnl >= 0 else ""
         pnl_emoji = "\U0001f7e2" if daily_pnl >= 0 else "\U0001f534"
+        total_sign = "+" if total_pnl >= 0 else ""
+        total_emoji = "\U0001f7e2" if total_pnl >= 0 else "\U0001f534"
         mode_label = "\U0001f4dd Paper" if mode == "paper" else "\U0001f4b0 Live"
 
         return (
@@ -980,6 +984,8 @@ class ApexTelegramBot:
             f"\U0001f4b0 Equity: <b>${equity:,.2f}</b>\n"
             f"{pnl_emoji} Today P&L: <b>{pnl_sign}${daily_pnl:,.2f} "
             f"({pnl_sign}{daily_pnl_pct:.2f}%)</b>\n"
+            f"{total_emoji} Total P&L: <b>{total_sign}${total_pnl:,.2f} "
+            f"({total_sign}{total_pnl_pct:.2f}%)</b>\n"
             f"\U0001f4c8 Open Positions: <b>{positions_count}</b>\n"
             f"\U0001f4c9 Drawdown: <b>{drawdown:.1f}%</b>\n"
             f"\u2699\ufe0f Mode: <b>{mode_label}</b>"

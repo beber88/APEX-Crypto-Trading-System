@@ -199,10 +199,17 @@ class ApexTradingSystem:
         if equity > 0 and total_unrealized != 0:
             total_pnl_pct += (total_unrealized / equity) * 100
 
+        # Total P&L since start (equity - initial capital)
+        initial_equity = 10_000.0
+        total_pnl_all = equity - initial_equity + total_unrealized
+        total_pnl_all_pct = (total_pnl_all / initial_equity * 100) if initial_equity else 0.0
+
         return {
             "total_equity": equity,
             "daily_pnl": total_pnl,
             "daily_pnl_pct": total_pnl_pct,
+            "total_pnl": total_pnl_all,
+            "total_pnl_pct": total_pnl_all_pct,
             "open_positions_count": len(positions),
             "current_drawdown_pct": equity_stats.get("current_drawdown_pct", 0.0),
             "mode": mode,
