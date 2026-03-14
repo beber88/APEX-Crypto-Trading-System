@@ -453,8 +453,45 @@ class MEXCBroker:
         amount = abs(position["amount"])
 
         if self._paper_trading:
-            order = self._simulate_order(symbol, close_side, "market", amount)
+            entry_price = position.get("entry_price", 0)
+            current_price = self._estimate_market_price(symbol)
+            if current_price <= 0:
+                current_price = entry_price
+
+            # Calculate realized P&L
+            if position["side"] == "long":
+                realized_pnl = (current_price - entry_price) * amount
+            else:
+                realized_pnl = (entry_price - current_price) * amount
+
+            # Update paper balance: release margin and apply P&L
+            entry_cost = entry_price * amount
+            self._paper_balance["used_usdt"] = max(0.0, self._paper_balance["used_usdt"] - entry_cost)
+            self._paper_balance["free_usdt"] += entry_cost + realized_pnl
+            self._paper_balance["total_usdt"] += realized_pnl
+
             self._paper_positions.pop(symbol, None)
+
+            order_id = f"paper_{uuid.uuid4().hex[:12]}"
+            order: dict[str, Any] = {
+                "order_id": order_id,
+                "symbol": symbol,
+                "side": close_side,
+                "type": "market",
+                "price": current_price,
+                "amount": amount,
+                "filled": amount,
+                "remaining": 0.0,
+                "status": "closed",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "realized_pnl": realized_pnl,
+            }
+            self._paper_orders[order_id] = order
+            log_with_data(logger, "info", "Paper position closed", {
+                "symbol": symbol,
+                "pnl": round(realized_pnl, 2),
+                "total_equity": round(self._paper_balance["total_usdt"], 2),
+            })
             return order
 
         order = await self.place_market_order(
@@ -572,6 +609,19 @@ class MEXCBroker:
             "status": "open",
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
+
+        # Track paper positions so get_position / close_position work
+        if self._paper_trading:
+            entry_price_actual = entry_order.get("price", signal.get("entry_price", 0))
+            self._paper_positions[symbol] = {
+                "symbol": symbol,
+                "side": "long" if direction == "long" else "short",
+                "amount": amount,
+                "entry_price": entry_price_actual,
+                "unrealized_pnl": 0.0,
+                "leverage": leverage,
+                "liquidation_price": 0.0,
+            }
 
         log_with_data(logger, "info", "Entry execution complete", {
             "trade_id": trade_record["trade_id"],

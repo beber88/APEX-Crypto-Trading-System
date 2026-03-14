@@ -66,6 +66,10 @@ class ApexTradingSystem:
                     get_portfolio_stats=self._get_portfolio_stats,
                     get_open_positions=self._get_open_positions,
                     get_regimes=self._get_regimes,
+                    pause_trading=self._pause_trading,
+                    resume_trading=self._resume_trading,
+                    close_all_positions=self._close_all_positions,
+                    close_position=self._close_single_position,
                 )
                 logger.info("Telegram bot initialized")
             except Exception as exc:
@@ -188,20 +192,21 @@ class ApexTradingSystem:
 
         # Realized P&L from closed trades today
         realized_pnl_pct = daily_stats.get("daily_pnl_pct", 0.0)
+        realized_pnl_usd = daily_stats.get("realized_pnl_usd", 0.0)
 
         # Unrealized P&L from open positions
         total_unrealized = sum(p.get("unrealized_pnl", 0.0) for p in positions)
         equity = equity_stats.get("current_equity", 0.0)
 
-        # Total daily P&L = realized + unrealized
-        total_pnl = total_unrealized  # dollar value from unrealized
+        # Total daily P&L = realized + unrealized (both dollars and pct)
+        total_pnl = realized_pnl_usd + total_unrealized
         total_pnl_pct = realized_pnl_pct
         if equity > 0 and total_unrealized != 0:
             total_pnl_pct += (total_unrealized / equity) * 100
 
         # Total P&L since start (equity - initial capital)
         initial_equity = 10_000.0
-        total_pnl_all = equity - initial_equity + total_unrealized
+        total_pnl_all = equity - initial_equity
         total_pnl_all_pct = (total_pnl_all / initial_equity * 100) if initial_equity else 0.0
 
         return {
@@ -228,6 +233,30 @@ class ApexTradingSystem:
             return {}
         state = self._engine.get_state()
         return state.get("current_regimes", {})
+
+    def _pause_trading(self) -> None:
+        """Pause the trading engine from opening new positions."""
+        if self._engine:
+            self._engine._running = False
+
+    def _resume_trading(self) -> None:
+        """Resume the trading engine."""
+        if self._engine:
+            self._engine._running = True
+
+    async def _close_all_positions(self) -> None:
+        """Emergency close all open positions."""
+        if self._engine:
+            await self._engine._emergency_close_all()
+
+    async def _close_single_position(self, symbol: str) -> None:
+        """Close a single position by symbol."""
+        if self._engine and self._engine._broker:
+            await self._engine._broker.close_position(symbol)
+            self._engine._open_positions = [
+                p for p in self._engine._open_positions
+                if p.get("symbol") != symbol
+            ]
 
     @staticmethod
     def _load_env(path: Path) -> None:

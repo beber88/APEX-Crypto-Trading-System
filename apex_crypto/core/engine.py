@@ -40,8 +40,8 @@ STRATEGY_REGISTRY: dict[str, tuple[str, str]] = {
     "vwap_reversion": ("apex_crypto.core.strategies.vwap_reversion", "VWAPReversionStrategy"),
     "funding_scalp": ("apex_crypto.core.strategies.funding_scalp", "FundingScalpStrategy"),
     "liquidation_fade": ("apex_crypto.core.strategies.liquidation_fade", "LiquidationFadeStrategy"),
-    "opening_range": ("apex_crypto.core.strategies.opening_range", "OpeningRangeBreakout"),
-    "cross_exchange_momentum": ("apex_crypto.core.strategies.cross_exchange_momentum", "CrossExchangeMomentum"),
+    "opening_range": ("apex_crypto.core.strategies.opening_range", "OpeningRangeBreakoutStrategy"),
+    "cross_exchange_momentum": ("apex_crypto.core.strategies.cross_exchange_momentum", "CrossExchangeMomentumStrategy"),
 }
 
 
@@ -102,6 +102,7 @@ class TradingEngine:
         self._daily_stats: dict[str, Any] = {
             "trades_today": 0,
             "daily_pnl_pct": 0.0,
+            "realized_pnl_usd": 0.0,
             "consecutive_losses": 0,
             "last_loss_ts": None,
         }
@@ -808,6 +809,11 @@ class TradingEngine:
                         pnl_pct = (entry_price - current_price) / entry_price * 100
 
                     self._daily_stats["daily_pnl_pct"] += pnl_pct
+                    amount = position.get("amount", 0)
+                    realized_usd = amount * entry_price * pnl_pct / 100
+                    self._daily_stats["realized_pnl_usd"] = (
+                        self._daily_stats.get("realized_pnl_usd", 0.0) + realized_usd
+                    )
                     if pnl_pct < 0:
                         self._daily_stats["consecutive_losses"] += 1
                         self._daily_stats["last_loss_ts"] = time.time()
