@@ -67,8 +67,9 @@ class ApexTradingSystem:
         tier2 = self._config.get("assets.tier2", [])
         all_symbols = tier1 + tier2
 
-        # Timeframes to monitor
-        timeframes = ["1h", "4h", "1d"]
+        # Timeframes to monitor — must include all timeframes used by strategies
+        # Strategies need: 1h, 4h, 1d (core), 15m (mean_reversion, smc, stat_arb)
+        timeframes = ["15m", "1h", "4h", "1d"]
 
         mode = self._config.get("system.mode", "paper")
 

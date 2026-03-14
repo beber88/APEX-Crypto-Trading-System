@@ -327,7 +327,7 @@ class TradingEngine:
         })
 
     async def _fetch_ohlcv(
-        self, symbol: str, timeframe: str, limit: int = 500
+        self, symbol: str, timeframe: str, limit: int = 1000
     ) -> Optional[pd.DataFrame]:
         """Fetch OHLCV candles from MEXC via ccxt."""
         try:
@@ -432,7 +432,7 @@ class TradingEngine:
                     computed = self._indicator_engine.compute_all(ind_df, tf)
                     indicators[tf] = computed
                 except Exception as exc:
-                    logger.debug("Indicator error %s %s: %s", symbol, tf, exc)
+                    logger.warning("Indicator error %s %s: %s", symbol, tf, exc)
                     indicators[tf] = df
 
         # Classify regime from the 4h or 1d timeframe
