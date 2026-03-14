@@ -74,6 +74,7 @@ class TradingEngine:
         self._storage = None
 
         # Runtime state
+        self._pending_entries: set[str] = set()  # symbols with pending entry orders
         self._open_positions: list[dict[str, Any]] = []
         self._daily_stats: dict[str, Any] = {
             "trades_today": 0,
@@ -87,6 +88,7 @@ class TradingEngine:
             "current_equity": 0.0,
         }
         self._current_signals: list[dict] = []
+        self._current_signals_by_symbol: dict[str, list] = {}  # symbol → [TradeSignal]
         self._current_regimes: dict[str, dict] = {}
         self._ohlcv_cache: dict[str, dict[str, pd.DataFrame]] = {}
         self._last_cycle_time: float = 0.0
@@ -239,6 +241,7 @@ class TradingEngine:
                         "open_positions": len(self._open_positions),
                         "equity": self._equity_stats.get("current_equity", 0),
                     })
+                    await self._reconcile_positions()
 
                 # Wait for next cycle
                 elapsed = time.time() - cycle_start
@@ -254,8 +257,27 @@ class TradingEngine:
         log_with_data(logger, "info", "Trading engine stopped")
 
     async def stop(self) -> None:
-        """Gracefully stop the engine."""
+        """Gracefully stop the engine, cancelling all open orders first."""
         self._running = False
+
+        # Cancel all open orders for tracked positions
+        if self._broker and self._open_positions:
+            log_with_data(logger, "info", "Cancelling open orders before shutdown", {
+                "positions": len(self._open_positions),
+            })
+            for position in self._open_positions:
+                symbol = position.get("symbol", "")
+                if not symbol:
+                    continue
+                try:
+                    cancelled = await self._broker.cancel_all_orders(symbol)
+                    log_with_data(logger, "info", "Orders cancelled for shutdown", {
+                        "symbol": symbol,
+                        "cancelled_count": len(cancelled),
+                    })
+                except Exception as exc:
+                    logger.warning("Failed to cancel orders for %s on shutdown: %s", symbol, exc)
+
         if self._broker:
             await self._broker.close()
         if self._alt_data_manager:
@@ -325,6 +347,15 @@ class TradingEngine:
     ) -> None:
         """Execute one full trading cycle across all symbols."""
 
+        # Check data staleness — skip trading if data is too old
+        data_age = time.time() - self._last_data_refresh
+        if self._last_data_refresh > 0 and data_age > self._data_refresh_interval * 2:
+            log_with_data(logger, "warning", "Market data is stale, skipping cycle", {
+                "data_age_seconds": round(data_age),
+                "max_age_seconds": self._data_refresh_interval * 2,
+            })
+            return
+
         # Check if trading should be paused
         should_pause, pause_reason = self._decision_engine.should_pause_trading(
             self._daily_stats, self._equity_stats,
@@ -344,6 +375,7 @@ class TradingEngine:
         # Scan for new entry signals
         all_aggregated: list[dict[str, Any]] = []
         self._current_signals = []
+        self._current_signals_by_symbol = {}
 
         for symbol in symbols:
             try:
@@ -423,6 +455,9 @@ class TradingEngine:
         if not signals:
             return None
 
+        # Cache raw TradeSignal objects for exit reversal detection
+        self._current_signals_by_symbol[symbol] = list(signals)
+
         # Aggregate signals
         aggregated = self._aggregator.aggregate_signals(symbol, signals)
 
@@ -500,14 +535,12 @@ class TradingEngine:
                 # Get current price
                 current_price = await self._get_current_price(symbol)
                 if current_price <= 0:
+                    logger.debug("Skipping exit check for %s: price unavailable", symbol)
                     continue
                 position["current_price"] = current_price
 
                 # Get latest signals for this symbol
-                symbol_signals = [
-                    s for s in self._strategies
-                    if hasattr(s, '_last_signal') and s._last_signal
-                ]
+                symbol_signals = self._current_signals_by_symbol.get(symbol, [])
 
                 # Check exit conditions
                 indicator_state = {
@@ -516,7 +549,7 @@ class TradingEngine:
                 }
 
                 exit_decision = self._decision_engine.check_exit_conditions(
-                    position, indicator_state, []
+                    position, indicator_state, symbol_signals
                 )
 
                 action = exit_decision.get("action", "hold")
@@ -594,9 +627,14 @@ class TradingEngine:
         if direction == "neutral":
             return
 
-        # Already in position?
+        # Already in position or pending entry?
         position_symbols = {p.get("symbol") for p in self._open_positions}
         if symbol in position_symbols:
+            return
+        if symbol in self._pending_entries:
+            log_with_data(logger, "debug", "Skipping duplicate entry", {
+                "symbol": symbol,
+            })
             return
 
         # Run decision engine
@@ -662,6 +700,7 @@ class TradingEngine:
         if not entry_signal["take_profit"]:
             entry_signal.pop("take_profit")
 
+        self._pending_entries.add(symbol)
         try:
             trade_record = await self._broker.execute_entry(entry_signal)
 
@@ -700,6 +739,8 @@ class TradingEngine:
 
         except Exception as exc:
             logger.error("Trade execution failed for %s: %s", symbol, exc)
+        finally:
+            self._pending_entries.discard(symbol)
 
     async def _get_current_price(self, symbol: str) -> float:
         """Get the latest price for a symbol."""
@@ -731,11 +772,52 @@ class TradingEngine:
             pass
 
     # ------------------------------------------------------------------
+    # Position reconciliation
+    # ------------------------------------------------------------------
+
+    async def _reconcile_positions(self) -> None:
+        """Reconcile internal position tracker with exchange state.
+
+        Removes local positions that no longer exist on the exchange.
+        Runs periodically (every 10 cycles) to catch missed fills or
+        manual closures.
+        """
+        if not self._broker or self._broker._paper_trading:
+            return
+        if not self._open_positions:
+            return
+
+        try:
+            for position in list(self._open_positions):
+                symbol = position.get("symbol", "")
+                if not symbol:
+                    continue
+                exchange_pos = await self._broker.get_position(symbol)
+                if exchange_pos["amount"] == 0.0:
+                    log_with_data(logger, "warning", "Position exists locally but not on exchange", {
+                        "symbol": symbol,
+                    })
+                    self._open_positions = [
+                        p for p in self._open_positions if p["symbol"] != symbol
+                    ]
+        except Exception as exc:
+            logger.warning("Position reconciliation failed: %s", exc)
+
+    # ------------------------------------------------------------------
     # State accessors (for dashboard)
     # ------------------------------------------------------------------
 
     def get_state(self) -> dict[str, Any]:
         """Return current engine state for the dashboard."""
+        data_age = time.time() - self._last_data_refresh if self._last_data_refresh > 0 else -1
+
+        is_paused = False
+        pause_reason = ""
+        if self._decision_engine:
+            is_paused, pause_reason = self._decision_engine.should_pause_trading(
+                self._daily_stats, self._equity_stats,
+            )
+
         return {
             "running": self._running,
             "cycle_count": self._cycle_count,
@@ -746,4 +828,7 @@ class TradingEngine:
             "current_signals": list(self._current_signals),
             "current_regimes": dict(self._current_regimes),
             "strategies_loaded": len(self._strategies),
+            "data_age_seconds": round(data_age, 1),
+            "is_trading_paused": is_paused,
+            "pause_reason": pause_reason,
         }

@@ -49,11 +49,12 @@ services:
       - DASHBOARD_USER=${DASHBOARD_USER}
       - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD}
     volumes:
-      - ./config:/app/config
+      - ./apex_crypto/config:/app/apex_crypto/config
       - ./data:/app/data
       - ./reports:/app/reports
       - ./ml/models:/app/ml/models
       - ./logs:/app/logs
+      - ./.env:/app/.env:ro
     ports:
       - "8000:8000"
 

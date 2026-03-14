@@ -127,7 +127,12 @@ class ApexTradingSystem:
         self._running = False
 
         if self._engine:
-            await self._engine.stop()
+            try:
+                await asyncio.wait_for(self._engine.stop(), timeout=30.0)
+            except asyncio.TimeoutError:
+                logger.warning("Engine shutdown timed out after 30s")
+            except Exception as exc:
+                logger.error("Error during engine shutdown: %s", exc)
 
         for task in self._tasks:
             task.cancel()
