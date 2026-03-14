@@ -50,12 +50,6 @@ tier2:
     - symbol: "LTC/USDT"
       futures: "LTC/USDT:USDT"
       max_leverage: 2
-    - symbol: "UNI/USDT"
-      futures: "UNI/USDT:USDT"
-      max_leverage: 2
-    - symbol: "APT/USDT"
-      futures: "APT/USDT:USDT"
-      max_leverage: 2
 
 dynamic_watchlist:
   description: "Auto-refreshed top coins by 24h volume"

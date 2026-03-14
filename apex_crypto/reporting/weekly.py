@@ -674,7 +674,7 @@ class WeeklyReportGenerator:
                         "take-profit placement and exit logic."
                     )
 
-                if total_trades > 20:
+                if total_trades > 0:
                     recommendation_parts.append(
                         "High trade count suggests possible over-trading. "
                         "Consider raising conviction thresholds."

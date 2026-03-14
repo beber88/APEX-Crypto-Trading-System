@@ -22,7 +22,7 @@ exchange:
 assets:
   tier1: ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"]
   tier2: ["DOGE/USDT", "AVAX/USDT", "LINK/USDT", "DOT/USDT", "MATIC/USDT",
-          "ADA/USDT", "ATOM/USDT", "LTC/USDT", "UNI/USDT", "APT/USDT"]
+          "ADA/USDT", "ATOM/USDT", "LTC/USDT"]
   dynamic_watchlist_refresh_hours: 4
   min_daily_volume_usd: 8000000
   min_price: 0.001
