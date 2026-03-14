@@ -182,12 +182,29 @@ class ApexTradingSystem:
             return {}
         state = self._engine.get_state()
         mode = self._config.get("system.mode", "paper") if self._config else "unknown"
+        daily_stats = state.get("daily_stats", {})
+        equity_stats = state.get("equity_stats", {})
+        positions = state.get("open_positions", [])
+
+        # Realized P&L from closed trades today
+        realized_pnl_pct = daily_stats.get("daily_pnl_pct", 0.0)
+
+        # Unrealized P&L from open positions
+        total_unrealized = sum(p.get("unrealized_pnl", 0.0) for p in positions)
+        equity = equity_stats.get("current_equity", 0.0)
+
+        # Total daily P&L = realized + unrealized
+        total_pnl = total_unrealized  # dollar value from unrealized
+        total_pnl_pct = realized_pnl_pct
+        if equity > 0 and total_unrealized != 0:
+            total_pnl_pct += (total_unrealized / equity) * 100
+
         return {
-            "total_equity": state.get("equity_stats", {}).get("current_equity", 0.0),
-            "daily_pnl": state.get("daily_stats", {}).get("daily_pnl_pct", 0.0) * 100,
-            "daily_pnl_pct": state.get("daily_stats", {}).get("daily_pnl_pct", 0.0),
-            "open_positions_count": len(state.get("open_positions", [])),
-            "current_drawdown_pct": state.get("equity_stats", {}).get("current_drawdown_pct", 0.0),
+            "total_equity": equity,
+            "daily_pnl": total_pnl,
+            "daily_pnl_pct": total_pnl_pct,
+            "open_positions_count": len(positions),
+            "current_drawdown_pct": equity_stats.get("current_drawdown_pct", 0.0),
             "mode": mode,
         }
 

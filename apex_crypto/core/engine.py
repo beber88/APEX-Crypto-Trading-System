@@ -733,6 +733,18 @@ class TradingEngine:
                     continue
                 position["current_price"] = current_price
 
+                # Calculate unrealized P&L
+                entry_price = position.get("entry_price", 0)
+                direction = position.get("direction", "long")
+                if entry_price > 0:
+                    if direction == "long":
+                        pnl_pct = (current_price - entry_price) / entry_price * 100
+                    else:
+                        pnl_pct = (entry_price - current_price) / entry_price * 100
+                    amount = position.get("amount", 0)
+                    position["unrealized_pnl"] = amount * entry_price * pnl_pct / 100
+                    position["unrealized_pnl_pct"] = pnl_pct
+
                 # Get latest signals for this symbol
                 symbol_signals = [
                     s for s in self._strategies
@@ -1052,6 +1064,8 @@ class TradingEngine:
                 "open_timestamp": time.time(),
                 "trade_id": trade_record.get("trade_id", ""),
                 "trailing_stop": None,
+                "unrealized_pnl": 0.0,
+                "unrealized_pnl_pct": 0.0,
             })
 
             self._daily_stats["trades_today"] += 1
@@ -1083,10 +1097,17 @@ class TradingEngine:
             return 0.0
 
     async def _update_equity(self) -> None:
-        """Update current equity from broker."""
+        """Update current equity from broker, including unrealized P&L."""
         try:
             balance = await self._broker.get_balance()
-            equity = balance.get("total_usdt", self._equity_stats["current_equity"])
+            base_equity = balance.get("total_usdt", self._equity_stats["current_equity"])
+
+            # Add unrealized P&L from open positions
+            total_unrealized = sum(
+                p.get("unrealized_pnl", 0.0) for p in self._open_positions
+            )
+            equity = base_equity + total_unrealized
+
             self._equity_stats["current_equity"] = equity
             if equity > self._equity_stats["peak_equity"]:
                 self._equity_stats["peak_equity"] = equity
@@ -1095,6 +1116,9 @@ class TradingEngine:
                 self._equity_stats["current_drawdown_pct"] = (
                     (peak - equity) / peak * 100
                 )
+
+            # Update daily P&L to include unrealized
+            self._daily_stats["unrealized_pnl"] = total_unrealized
         except Exception:
             pass
 
