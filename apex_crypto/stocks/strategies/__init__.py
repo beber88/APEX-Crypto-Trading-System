@@ -1,0 +1,1 @@
+"""Stock-specific trading strategies."""

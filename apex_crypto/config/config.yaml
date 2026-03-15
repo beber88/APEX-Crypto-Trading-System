@@ -4,8 +4,8 @@
 # ═══════════════════════════════════════════════════════
 
 system:
-  name: "APEX Crypto Trading System"
-  version: "1.0.0"
+  name: "APEX Trading System"
+  version: "2.0.0"
   mode: "live"           # "paper" or "live"
   log_level: "INFO"      # DEBUG / INFO / WARNING / ERROR
   timezone: "UTC"
@@ -157,3 +157,94 @@ backtest:
   wfo_insample_months: 12
   wfo_outsample_months: 4
   monte_carlo_runs: 1000
+
+# ═══════════════════════════════════════════════════════
+# STOCKS MODULE — US Equity Trading
+# ═══════════════════════════════════════════════════════
+
+stocks:
+  enabled: true
+  mode: "paper"                 # "paper" or "live" (independent of crypto mode)
+
+  # Alpaca Markets broker
+  broker:
+    paper_initial_balance: 100000.0
+    rate_limit_ms: 200
+
+  # Watchlist — tier1 = always active, tier2 = strong signals only
+  assets:
+    tier1: ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"]
+    tier2: ["JPM", "V", "JNJ", "UNH", "HD", "PG", "MA", "BAC",
+            "DIS", "NFLX", "AMD", "CRM", "COST", "ABBV", "KO"]
+    # Additional screening watchlist (scanned daily for opportunities)
+    screening_watchlist: ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA",
+                          "META", "TSLA", "JPM", "V", "JNJ", "UNH",
+                          "HD", "PG", "MA", "BAC", "DIS", "NFLX",
+                          "AMD", "CRM", "COST", "ABBV", "KO",
+                          "PEP", "TMO", "ACN", "MCD", "LIN", "ADBE",
+                          "CSCO", "AVGO"]
+
+  # Timeframes for stock analysis
+  timeframes: ["1d"]            # Stocks primarily trade on daily
+
+  # Cycle interval for stock scanning (seconds)
+  cycle_interval_seconds: 300   # Every 5 minutes during market hours
+
+  # Goldman Sachs Screener settings
+  screener:
+    min_market_cap: 1000000000  # $1B minimum
+    min_avg_volume: 500000
+    max_debt_to_equity: 200
+    run_interval_hours: 24      # Screen once daily
+
+  # Morgan Stanley DCF settings
+  dcf:
+    risk_free_rate: 0.04
+    equity_risk_premium: 0.055
+    terminal_growth: 0.025
+    exit_multiple: 12.0
+    forecast_years: 5
+
+  # JPMorgan Earnings Analyzer settings
+  earnings:
+    days_before_earnings: 10    # Start analyzing 10 days before
+    min_quality_score: 55
+    min_beat_rate: 0.60
+
+  # Bridgewater Risk Assessment settings
+  risk_analysis:
+    max_sector_pct: 0.30        # Max 30% in one sector
+    max_single_pct: 0.10        # Max 10% in one stock
+    rebalance_threshold_pct: 0.05
+    var_confidence: 0.95
+
+  # BlackRock Portfolio Builder settings
+  portfolio:
+    risk_tolerance: "growth"    # conservative/moderate/balanced/growth/aggressive
+    monthly_dca: 0              # Monthly DCA amount ($)
+    time_horizon_years: 10
+
+  # Stock-specific strategies
+  strategies:
+    stock_value:
+      enabled: true
+      min_composite_score: 60
+      min_dcf_upside_pct: 15
+      max_risk_rating: 7
+    stock_momentum:
+      enabled: true
+      ema_fast: 21
+      ema_slow: 50
+      volume_zscore_min: 1.5
+    stock_earnings:
+      enabled: true
+      days_before_earnings: 10
+      min_quality_score: 55
+
+  # Risk settings for stocks (separate from crypto)
+  risk:
+    max_position_pct: 8.0       # Max 8% per stock
+    max_open_positions: 15
+    max_trades_per_day: 10
+    daily_loss_limit_pct: 2.0
+    stop_loss_pct: 5.0          # Default 5% stop loss

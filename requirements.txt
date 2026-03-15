@@ -2,9 +2,13 @@
 # APEX CRYPTO TRADING SYSTEM — Python Dependencies
 # ═══════════════════════════════════════════════════════
 
-# Trading
+# Trading — Crypto
 ccxt>=4.0.0
 websockets>=12.0
+
+# Trading — Stocks
+yfinance>=0.2.31
+alpaca-py>=0.21.0
 
 # Data Processing
 pandas>=2.1.0
