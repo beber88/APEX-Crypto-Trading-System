@@ -478,15 +478,21 @@ class StockBroker:
             }
         else:
             pos = self._paper_positions.get(symbol, {})
-            if pos.get("qty", 0) < qty:
-                raise ValueError(f"Insufficient shares: {pos.get('qty', 0)} < {qty}")
+            current_qty = pos.get("qty", 0)
             self._paper_balance += cost
-            remaining = pos["qty"] - qty
-            if remaining <= 0:
+            remaining = current_qty - qty
+            if remaining == 0:
                 self._paper_positions.pop(symbol, None)
-            else:
+            elif remaining > 0:
                 pos["qty"] = remaining
                 pos["market_value"] = remaining * price
+            else:
+                # Short position: negative qty means we owe shares
+                self._paper_positions[symbol] = {
+                    "qty": remaining,
+                    "avg_price": price,
+                    "market_value": remaining * price,
+                }
 
         log_with_data(logger, "info", "Paper stock order filled", {
             "symbol": symbol,

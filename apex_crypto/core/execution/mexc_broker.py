@@ -64,16 +64,34 @@ class MEXCBroker:
         api_key = os.environ.get("MEXC_API_KEY", "")
         secret_key = os.environ.get("MEXC_SECRET_KEY", "")
 
-        self._exchange: ccxt.mexc = ccxt.mexc({
-            "apiKey": api_key,
-            "secret": secret_key,
+        # In paper mode, don't pass empty/dummy API keys — they cause ccxt
+        # to add authentication headers to requests that don't need them,
+        # which makes public endpoint calls fail.
+        exchange_params: dict[str, Any] = {
             "enableRateLimit": True,
             "rateLimit": config.get("rate_limit_ms", 100),
             "options": {
                 "defaultType": exchange_cfg.get("default_type", "swap"),
-                "fetchCurrencies": False,  # Skip capital/config/getall (requires auth, often fails)
+                # Disable fetchCurrencies at the options level to prevent
+                # load_markets() from calling the authenticated endpoint
+                # capital/config/getall.  Currencies are not needed for
+                # OHLCV / ticker / market-data operations.
+                "fetchCurrencies": False,
             },
-        })
+        }
+
+        if api_key and secret_key and not self._paper_trading:
+            exchange_params["apiKey"] = api_key
+            exchange_params["secret"] = secret_key
+
+        self._exchange: ccxt.mexc = ccxt.mexc(exchange_params)
+
+        # Also disable fetchCurrencies on the `has` dict.  ccxt checks
+        # self.has['fetchCurrencies'] (which defaults to True for MEXC)
+        # when deciding whether to call fetch_currencies() during
+        # load_markets().  Setting both the option and the capability
+        # flag ensures the authenticated endpoint is never hit.
+        self._exchange.has['fetchCurrencies'] = False
 
         if testnet:
             self._exchange.set_sandbox_mode(True)
