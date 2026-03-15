@@ -141,19 +141,35 @@ class AlternativeDataManager:
     def _get_mexc_exchange(self) -> ccxt.mexc:
         """Returns a shared MEXC ccxt exchange instance.
 
+        Avoids passing empty/dummy API keys so that ccxt does not add
+        authentication headers to public endpoint requests.  Also
+        disables ``fetchCurrencies`` to prevent ``load_markets()`` from
+        hitting the authenticated ``capital/config/getall`` endpoint.
+
         Returns:
             A configured ccxt.mexc async exchange object.
         """
         if self._mexc_exchange is None:
             mexc_config: dict = self.config.get("mexc", {})
-            self._mexc_exchange = ccxt.mexc(
-                {
-                    "apiKey": mexc_config.get("apiKey", ""),
-                    "secret": mexc_config.get("secret", ""),
-                    "enableRateLimit": True,
-                    "options": {"defaultType": "swap"},
-                }
-            )
+            api_key = mexc_config.get("apiKey", "")
+            secret = mexc_config.get("secret", "")
+
+            params: dict = {
+                "enableRateLimit": True,
+                "options": {
+                    "defaultType": "swap",
+                    "fetchCurrencies": False,
+                },
+            }
+
+            # Only pass credentials when they are real (non-empty)
+            if api_key and secret:
+                params["apiKey"] = api_key
+                params["secret"] = secret
+
+            self._mexc_exchange = ccxt.mexc(params)
+            # Belt-and-suspenders: also disable via the has dict
+            self._mexc_exchange.has["fetchCurrencies"] = False
         return self._mexc_exchange
 
     # ------------------------------------------------------------------
