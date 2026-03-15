@@ -36,14 +36,16 @@ DURATION="${2:-}"
 if [ -f .env ]; then
     export $(grep -v '^#' .env | grep -v '^$' | xargs)
     echo "✓ Environment loaded from .env"
+elif [ -f .env.template ]; then
+    echo "  .env file not found — creating from .env.template"
+    cp .env.template .env
+    echo ""
+    echo "  IMPORTANT: Edit .env with your MEXC API keys before running live."
+    echo "  For paper trading, we'll use placeholder keys (data from exchange only)."
+    echo ""
+    export $(grep -v '^#' .env | grep -v '^$' | xargs)
 else
-    echo "✗ ERROR: .env file not found! Copy .env.template to .env and fill in your keys."
-    exit 1
-fi
-
-# Validate required keys
-if [ -z "$MEXC_API_KEY" ] || [ -z "$MEXC_SECRET_KEY" ]; then
-    echo "✗ ERROR: MEXC_API_KEY and MEXC_SECRET_KEY must be set in .env"
+    echo "ERROR: Neither .env nor .env.template found!"
     exit 1
 fi
 

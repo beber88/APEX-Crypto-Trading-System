@@ -187,20 +187,23 @@ class ApexTradingSystem:
             import uvicorn
             from apex_crypto.dashboard.app import create_app
 
+            port = int(self._config.get("dashboard.port", 8000))
             app = create_app(self._config._data, self._engine)
 
             config = uvicorn.Config(
                 app,
                 host="0.0.0.0",
-                port=int(self._config.get("dashboard.port", 8000)),
+                port=port,
                 log_level="warning",
             )
             server = uvicorn.Server(config)
             await server.serve()
         except ImportError as exc:
             logger.warning("Dashboard not available (missing deps): %s", exc)
+        except SystemExit:
+            logger.warning("Dashboard failed to start (port %s likely in use) — trading continues without dashboard", port)
         except Exception as exc:
-            logger.error("Dashboard error: %s", exc)
+            logger.error("Dashboard error: %s — trading continues without dashboard", exc)
 
     async def generate_report(self) -> str:
         """Generate a status report of the trading session."""
