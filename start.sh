@@ -18,6 +18,17 @@
 set -e
 cd "$(dirname "$0")"
 
+# Detect python command (macOS uses python3)
+PYTHON="python3"
+if ! command -v python3 &>/dev/null; then
+    PYTHON="python"
+fi
+if ! command -v $PYTHON &>/dev/null; then
+    echo "ERROR: Python not found. Install Python 3.9+ first."
+    echo "  macOS: brew install python"
+    exit 1
+fi
+
 MODE="${1:-paper}"
 DURATION="${2:-}"
 
@@ -39,19 +50,19 @@ fi
 # Handle report mode
 if [ "$MODE" = "report" ]; then
     echo "Generating status report..."
-    python -m apex_crypto.main --report
+    $PYTHON -m apex_crypto.main --report
     exit 0
 fi
 
 # Set mode in config
 if [ "$MODE" = "paper" ]; then
     echo "  Mode: PAPER (simulation — no real trades)"
-    sed -i 's/mode: "live"/mode: "paper"/' apex_crypto/config/config.yaml
+    sed -i'' -e 's/mode: "live"/mode: "paper"/' apex_crypto/config/config.yaml
 elif [ "$MODE" = "live" ]; then
     echo "  ⚠️  Mode: LIVE TRADING — Real money!"
     echo "  Press Ctrl+C within 5 seconds to cancel..."
     sleep 5
-    sed -i 's/mode: "paper"/mode: "live"/' apex_crypto/config/config.yaml
+    sed -i'' -e 's/mode: "paper"/mode: "live"/' apex_crypto/config/config.yaml
 fi
 
 DURATION_DISPLAY="unlimited"
@@ -73,4 +84,4 @@ echo "════════════════════════�
 echo ""
 
 # Start the system
-python -m apex_crypto.main --mode "$MODE" $DURATION_FLAG
+$PYTHON -m apex_crypto.main --mode "$MODE" $DURATION_FLAG
